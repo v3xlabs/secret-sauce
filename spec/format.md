@@ -1,0 +1,141 @@
+# The `.sauce` file format, version 1
+
+This file says what a `.sauce` file holds, how it is encrypted, and what it hides.
+`spec/design.md` says why.
+The code of `sauce` in `crates/sauce` and its tests define the exact bytes, such as the grammar, the limits and the layout of the associated data.
+The first line of every file is the format number, so the format can change later under a new number.
+
+## An example
+
+```yaml
+sauce: 1
+name: kanidm/oauth2/freshrss
+commitment: Rz8x1KcQ...
+facts: Kq1vT0bW...
+value: 3nXw8Jq0...
+keys:
+  - for: admin
+    age: age1...
+    wrap:
+      - X25519 q7JdK2... 0aVxR9...
+  - for: web
+    age: age1...
+    wrap:
+      - X25519 Lm4tYc... h2PzE1...
+```
+
+Inside `facts`, before it is padded and encrypted, this file holds these lines.
+
+```
+version: 4
+set: 2026-11-10
+expires: 2027-02-10
+generator: 5d1c09e7...
+```
+
+## The fields
+
+- `sauce` is the format number, and a reader rejects any number other than `1`.
+- `name` is the name of the secret, in lower case segments that a `/` separates, so it is always a safe relative path.
+  A reader rejects the file when `name` is not the name it expects for that file.
+- `commitment` binds the file to one file key, as "Encryption" says.
+- `facts` and `value` are the encrypted facts and the encrypted secret.
+- `keys` lists the readers.
+  Each entry has `for`, which is `admin` or the name of a host, then the public key in `age` or `pgp`, then `wrap`.
+  An age `wrap` is the stanzas that the age library returns for that key, one line each.
+  A GPG `wrap` is a gpg message that holds the file key.
+
+The file is YAML in block style, in a strict subset that has one spelling for each field.
+A reader parses that subset itself, never with a YAML library, and rejects anything else.
+
+The facts are ASCII lines of the form `key: value`, in the order of the list below.
+A fact that is not set has no line, and `formerly` has one line for each former name.
+
+- `version` counts the writes of a value.
+- `set` is the date of the last write of a value.
+- `issued` is the date a provider issued the secret, and it is optional.
+- `expires` is the date the secret stops working, and it is optional.
+- `generator` is the SHA-256 digest of the declared generator, and a secret you bring yourself has none.
+- `formerly` is a former name of the secret, after a rename.
+- `revoke: true` says that a former reader still knows the value.
+
+## Padding
+
+Before encryption, `value` and `facts` are each padded with zero bytes to one size from this list, the steps.
+The steps are 256 bytes, 1 KiB, 4 KiB, 8 KiB, 16 KiB, 32 KiB and 64 KiB.
+The padded bytes start with the length of the content, so the largest secret is 4 bytes short of 64 KiB.
+
+The step of `value` follows the bound that you declared, not the secret itself.
+The bound is the longest value that the generator can make, or `maxLength` for a secret you bring yourself, or 252 bytes when you declared neither.
+`sauce` takes the smallest step that holds the bound, and it refuses a secret that is longer than its bound.
+
+The step of `facts` is the smallest step that holds the former names and every other fact at its longest.
+So the step stays the same when an optional fact comes or goes, and it is 256 bytes unless the former names are many or long.
+
+From the size of `value`, a reader of the repository learns its step, and so only the range of the bound you declared.
+An API key, a password, a phone number, a port and a boolean all take the 256-byte step, and their `value` fields have the same length.
+A private key or a certificate takes a larger step, and its size shows that it is large.
+The size of `facts` shows nothing, except that a secret has many or long former names, which git history shows anyway.
+
+## Encryption
+
+A `.sauce` file follows age where it can.
+
+- Each write makes a new 16-byte file key from a cryptographic random number generator, as age does.
+- `sauce` wraps the file key for each reader with the age library, as age does in its header, so classical, post-quantum and plugin keys work as they do in age.
+  For a GPG key, gpg encrypts the file key.
+- HKDF-SHA-256 derives three separate 32-byte outputs from the file key, the key of `value`, the key of `facts` and `commitment`, with the labels `secret-sauce/1/value`, `secret-sauce/1/facts` and `secret-sauce/1/commitment`.
+- `value` and `facts` are each one ChaCha20-Poly1305 message with a nonce of 12 zero bytes.
+
+The zero nonce is safe because a key encrypts one message only.
+`value` and `facts` have two different keys, and every write makes a new file key, so no key ever encrypts a second message.
+age uses a zero nonce the same way when it encrypts the file key in an X25519 stanza.
+
+The associated data of both messages is the format number, `name`, `commitment`, and the `for` and the public key of each reader.
+So a file whose `name` was changed, or that got one more reader, fails to open.
+The wraps are not in the associated data, because a damaged wrap only stops its own reader.
+
+ChaCha20-Poly1305 does not commit to its key.
+Without `commitment`, a writer could make one file that gives two readers two different secrets.
+A reader derives the commitment from the file key it unwrapped and compares it with `commitment` in constant time, before it decrypts anything.
+So every reader that opens one file gets the same value and the same facts.
+A reader gives you nothing until both messages decrypt and their padding is correct.
+
+These parts are different from age.
+
+- An age file is binary, with an HMAC over its whole header, and a `.sauce` file is text with no header HMAC.
+  The associated data covers the name and the readers, and `commitment` binds the file key, but nothing covers the bytes of the wraps.
+- An age payload mixes a random 16-byte nonce into its key and is encrypted in chunks of 64 KiB.
+  A `.sauce` file has no payload nonce, because each file key encrypts one file only, and each field is one message of at most 64 KiB.
+  Without that nonce, `commitment` depends on the file key alone, so somebody who guesses file keys can test each guess against the commitments of all files at once.
+  With N files, a guess is N times as likely to hit one, which is still far out of reach with 128-bit file keys, but it is less margin than age keeps.
+- age does not pad, and `sauce` pads both fields.
+
+## What a reader of the repository can see
+
+Anybody with the repository and no key sees these.
+
+- `name`, and so which secrets exist.
+- The `for` and the public key of each reader, and so which hosts read which secret.
+- The number and the types of the stanzas, and so whether a reader uses a post-quantum key.
+- The steps of `value` and of `facts`.
+- `commitment`, which changes with each write and shows nothing about the secret.
+
+They do not see the value or any fact.
+Every reader of a secret, host or admin, can read all of its facts.
+
+Git keeps every earlier file, with the date of each commit.
+So the history shows when a secret was written, when it was renamed and when its readers changed, even though `set`, `version` and `formerly` are encrypted.
+An old reader can still open the old files.
+
+The format does not show who wrote a file.
+Writing needs public keys only, so anybody who can push to your repository can replace a file, put back an older one, or add a reader.
+`sauce generate` shows every key that is about to gain access and asks first.
+
+## What is different from sops
+
+- sops shows the length of each value, and `sauce` pads every value to a step.
+- The values of one sops file share one data key, and each `.sauce` file is one secret with its own readers.
+- The facts of a secret, such as its expiry date, are encrypted next to its value.
+- sops stores a full age file for each age reader, and a `.sauce` file stores only the stanzas.
+- sops and age cannot open a `.sauce` file.

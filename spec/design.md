@@ -89,6 +89,8 @@ It shows what it is about to do and asks first.
 `sauce search` is a fuzzy picker over the names of your secrets.
 Next to each name it shows which hosts use it, how it is made, when it last changed and when it expires.
 It never shows a value, so it is safe on a shared screen.
+The names and the hosts are plain text in each file, so `sauce search` lists them with no key.
+The other facts are encrypted, so `sauce search`, `sauce get` and `sauce status` need your private key to show them.
 
 `sauce get <name>` prints the same facts for one secret.
 You get the value only when you ask for it, with `--copy`, `--print` or `--exec`.
@@ -118,8 +120,8 @@ This is what a file looks like.
 # kanidm/freshrss-oauth.sauce
 sauce: 1
 name: kanidm/oauth2/freshrss
-version: 4
-set: 2026-11-10
+commitment: Rz8x1KcQ...
+facts: Kq1vT0bW...
 value: 3nXw8Jq0...
 keys:
   - for: admin
@@ -137,11 +139,12 @@ keys:
 
 The layout is borrowed from sops.
 `value` is the secret, encrypted one time.
+`facts` holds the version, the dates and the other facts of the secret, encrypted with it.
 `keys` holds, for each reader, the piece they need to open it, and `for` says whether that reader is you or one of your hosts.
-The rest are plain facts that `sauce` can show without decrypting anything.
+`commitment` makes sure that every reader who opens the file gets the same secret.
 Because the name and the readers are in the file itself, `sauce search` finds every `.sauce` file in your flake without evaluating any Nix.
 
-Two things are different from sops.
+Three things are different from sops.
 
 The value is padded before it is encrypted.
 Sizes come in steps of 256 bytes, 1 KiB, 4 KiB and up, and the step follows what you declared, not what the value turned out to be.
@@ -151,8 +154,10 @@ Each secret has its own readers.
 A secret is encrypted for you and for the hosts that declare it, and for nobody else.
 When a host starts or stops using a secret, `sauce generate` adjusts the readers.
 
+The facts of a secret, such as its version and its expiry date, are encrypted too.
+
 A `.sauce` file is not a sops file, and sops and age cannot open one.
-To make up for that, `spec/format.md` will describe the format byte by byte, with test vectors, and the repository will carry a second small decrypt tool that shares no code with `sauce`.
+To make up for that, `spec/format.md` describes the format and what it hides, and the repository will carry a second small decrypt tool that shares no code with `sauce`.
 You should never depend on `sauce` alone to get your secrets back.
 
 ## Keys
