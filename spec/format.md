@@ -37,7 +37,7 @@ generator: 5d1c09e7...
 
 - `sauce` is the format number, and a reader rejects any number other than `1`.
 - `name` is the name of the secret, in lower case segments that a `/` separates, so it is always a safe relative path.
-  A reader rejects the file when `name` is not the name it expects for that file.
+  It is not the name of the file on disk, and "Encryption" says how it is bound.
 - `commitment` binds the file to one file key, as "Encryption" says.
 - `facts` and `value` are the encrypted facts and the encrypted secret.
 - `keys` lists the readers.
@@ -47,6 +47,8 @@ generator: 5d1c09e7...
 
 The file is YAML in block style, in a strict subset that has one spelling for each field.
 A reader parses that subset itself, never with a YAML library, and rejects anything else.
+A file is at most 1 MiB, so `sauce` refuses to write a file with more readers than that holds, and a reader stops after 1 MiB and refuses the file.
+A reader refuses `facts` or `value` when its length is not a step plus the 16-byte tag, before it decodes the field, as "Padding" says.
 
 The facts are ASCII lines of the form `key: value`, in the order of the list below.
 A fact that is not set has no line, and `formerly` has one line for each former name.
@@ -92,14 +94,23 @@ The zero nonce is safe because a key encrypts one message only.
 age uses a zero nonce the same way when it encrypts the file key in an X25519 stanza.
 
 The associated data of both messages is the format number, `name`, `commitment`, and the `for` and the public key of each reader.
-So a file whose `name` was changed, or that got one more reader, fails to open.
+So a `.sauce` file opens only under the name of the secret it was written for.
+A file that you move to another folder still opens, when its secret has the same name.
+A `name` line that is edited by hand, or one more reader, makes the file fail to open.
+Writing needs public keys only, so somebody who can push could copy the file of one secret over another secret that the same machine reads, and the machine would put that value where it expects the other one.
+The bound name makes the machine refuse that file.
+sops binds the path of each value in the same way.
+A rename goes through `sauce` and needs the private key of an admin, because `sauce` encrypts the secret again under its new name.
 The wraps are not in the associated data, because a damaged wrap only stops its own reader.
 
 ChaCha20-Poly1305 does not commit to its key.
 Without `commitment`, a writer could make one file that gives two readers two different secrets.
 A reader derives the commitment from the file key it unwrapped and compares it with `commitment` in constant time, before it decrypts anything.
 So every reader that opens one file gets the same value and the same facts.
-A reader gives you nothing until both messages decrypt and their padding is correct.
+A reader gives you nothing until the message it opens decrypts and its padding is correct.
+A read of the value opens both messages, so a damaged `facts` or `value` stops it.
+A read of the facts opens `facts` only and never decrypts `value`, so it skips the authentication and the padding check of `value`, and it works on a file whose `value` is damaged but still parses.
+It checks the name, the readers, `commitment` and `facts` as a read of the value does.
 
 These parts are different from age.
 

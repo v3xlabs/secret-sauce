@@ -1,7 +1,9 @@
 {
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    sauce.url = "github:v3xlabs/secret-sauce";
+    # Your own flake has github:v3xlabs/secret-sauce here.
+    # This example takes the checkout around it, so that it runs the sauce of the same commit.
+    sauce.url = "path:..";
     sauce.inputs.nixpkgs.follows = "nixpkgs";
   };
 
@@ -25,7 +27,7 @@
               system.stateVersion = "26.05";
 
               sauce = {
-                adminRecipients = [ "age19g68xd9k8k9xfgl9e0sklxy3h5wm9l8yzj4jyd6t726u46yztcfqsv8fxg" ];
+                adminRecipients = [ "age1kv6aj53yzlf5wyu32qnv39wh68apzgkqpv49c0g0zvh5fzpjqcyscym83z" ];
                 identityFile = "/var/lib/sauce/host.key";
                 defaultDir = ./secrets;
               };

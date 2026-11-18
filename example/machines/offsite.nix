@@ -5,5 +5,5 @@
     self.nixosModules.restic-check
   ];
 
-  sauce.recipient = "age1yz00um34yzkharmcm53s33c59x2tkjqw22wdkw36xkevh70l8ytsfp6un8";
+  sauce.recipient = "age1gxja8jf28w6scdug3ncevhr929uht3qggyhuptedv7sghn52ug4sqzqgt8";
 }

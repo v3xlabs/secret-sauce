@@ -1,182 +1,271 @@
 # Example
 
 This is a small NixOS flake with three machines that keep their secrets with secret-sauce.
-It shows what your repository looks like when you are done.
-`sauce` and the `sauce` option cannot run it yet, so nothing evaluates it.
+`flake.nix` takes `sauce` from the checkout around this folder, so every command here runs the `sauce` of the same commit.
+
+The age keys of this example are throwaway keys, and their private halves are in `snakeoil/`.
+Everybody can read them, so that you can try every command, and so that the checks of this repository can start a machine.
+Never keep a private key in your own repository.
 
 ## The machines
 
-- `notes` runs HedgeDoc at `notes.example.com` and Miniflux at `rss.example.com`, with one PostgreSQL for both.
-  Kanidm at `auth.example.com` gives both services their logins.
-  `notes` backs the database up with restic to a local folder, and ddclient keeps its DNS record up to date.
-- `backup` copies that restic folder from `notes` every day, over SSH.
-- `offsite` does the same from another building, and checks its copy with `restic check` every week.
+- `notes` runs HedgeDoc and Miniflux with one PostgreSQL, Kanidm for their logins, a restic backup of the database, and ddclient.
+- `backup` copies the restic folder of `notes` every day over SSH.
+- `offsite` does the same from another building, and runs `restic check` every week.
 
 | Secret | Defined in | Read by |
 |---|---|---|
 | `hedgedoc/db-password` | `services/hedgedoc.nix` | `notes`, in `services/hedgedoc.nix` and `services/postgresql.nix` |
 | `kanidm/idm-admin-password` | `services/kanidm.nix` | `notes` |
-| `sso/<client>`, one for each SSO client | the loop in `services/kanidm.nix` | `notes`, in `services/kanidm.nix` and in the file of the client |
+| `sso/hedgedoc`, `sso/miniflux` | the loop over `sso.clients` in `services/kanidm.nix` | `notes` |
 | `ddclient/api-token` | `services/ddclient.nix` | `notes` |
-| `restic/password` | `services/restic.nix` | `notes`, and `offsite` in `services/restic-check.nix` |
-| `backup/ssh-key` | `services/rsync.nix` | `backup` and `offsite`, and `notes` has the public half in `services/openssh.nix` |
+| `restic/password` | `services/restic.nix` | `notes`, and `offsite` through `sauce.read` in `services/restic-check.nix` |
+| `backup/ssh-key` | `services/rsync.nix` | `backup` and `offsite`, and `notes` trusts its public half in `services/openssh.nix` |
 
-Each file in `services/` is a NixOS module, and `services/default.nix` names them all.
-`flake.nix` exposes that set as `nixosModules`.
-Each file in `machines/` imports the modules of a machine, such as `self.nixosModules.hedgedoc`, and gives the public key of the machine.
-`flake.nix` sets what all machines share: your own public keys, and `secrets/` as the folder of the secrets.
-The machines leave out their disks and boot loader, which you already have.
+Each file in `services/` is a NixOS module, and each file in `machines/` imports the modules of one machine and gives its public key.
+Two machines that import one module share its secret.
+A module that only reads a secret from another machine says so with `sauce.read = [ "restic/password" ];`.
+A new SSO client is one `sso.clients.<name>` block in the file of its service, and the loop in `services/kanidm.nix` gives it a secret with a `generator`.
 
-## Two services on one machine
+## Walk through the commands
 
-HedgeDoc and PostgreSQL both need `hedgedoc/db-password`.
-`services/hedgedoc.nix` defines it, with its `generator`.
-`services/postgresql.nix` reads `config.sauce.secrets."hedgedoc/db-password".path`, as it reads any other option of the machine.
-The file belongs to `postgres`, because PostgreSQL reads it, and HedgeDoc gets the value through a template.
-
-## One secret, two machines
-
-`backup` and `offsite` both import `self.nixosModules.rsync`, so both get `backup/ssh-key`.
-Two machines that import the same module share its secret, and `sauce generate` stops when two machines give a different `generator` or `once` for one name.
-`services/restic-check.nix` on `offsite` needs `restic/password`, which `services/restic.nix` defines on `notes`.
-A module that only reads a secret says so with `sauce.read = [ "restic/password" ];`, and `sauce generate` finds the one definition over all machines.
-
-## SSO for every service
-
-A service says in its own file that it logs in through kanidm.
-This is the block in `services/miniflux.nix`.
-
-```nix
-sso.clients.miniflux = {
-  displayName = "Miniflux";
-  originUrl = "https://rss.example.com/oauth2/oidc/callback";
-  originLanding = "https://rss.example.com";
-};
-```
-
-`services/kanidm.nix` has one loop over `config.sso.clients`.
-For each client it defines the secret `sso/<client>` with a `generator`, and the kanidm OAuth2 client with that secret as `basicSecretFile`.
-This is the part that defines the secrets.
-
-```nix
-sauce.secrets = lib.mapAttrs' (
-  name: _:
-  lib.nameValuePair "sso/${name}" {
-    generator = { encoding = "alphanum"; min = 40; max = 48; };
-    owner = "kanidm";
-    restartUnits = [ "kanidm.service" ];
-  }
-) config.sso.clients;
-```
-
-The service reads its client secret through a template, such as `${config.sauce.placeholder."sso/miniflux"}`.
-The file belongs to `kanidm`, because kanidm reads it, and systemd reads the template of the service as root when the service starts.
-
-A new SSO client is one block in the file of its service, and no edit in `services/kanidm.nix`.
-`sso.clients` is an option of this example and not of `sauce`.
-`sauce` gives the generator, the one definition and the placeholder, and plain Nix gives the loop.
-`sauce rotate 'sso/*'` makes new client secrets for all clients, and one deploy of `notes` restarts kanidm and both services.
-To add people to kanidm, log in as `idm_admin` with the password from `sauce get kanidm/idm-admin-password --copy`.
-
-## From an empty checkout to three machines
-
-Get `sauce` with `nix shell github:v3xlabs/secret-sauce`.
-
-Make an age key for yourself with `age-keygen`, and put its public key in `sauce.adminRecipients` in `flake.nix`.
-A hardware key through an age plugin works too.
-
-On each machine, make the key of the machine.
+Open a shell with the `sauce` of this checkout, in this folder.
 
 ```sh
-age-keygen -o /var/lib/sauce/host.key
+nix shell ..#sauce
 ```
 
-Put the public key it prints in `sauce.recipient` in `machines/<name>.nix`.
+See what the machines declare.
 
-Make the secrets.
+```sh
+sauce list
+```
+
+```
+SECRET                     MACHINES        MADE BY          STATE
+backup/ssh-key             backup,offsite  ssh-ed25519      ✗
+ddclient/api-token         notes           set              ✗
+hedgedoc/db-password       notes           alphanum, 40<48  ✗
+kanidm/idm-admin-password  notes           alphanum, 40<48  ✗
+restic/password            notes,offsite   once hex, 32 B   ✗
+sso/hedgedoc               notes           alphanum, 40<48  ✗
+sso/miniflux               notes           alphanum, 40<48  ✗
+The facts are encrypted, so expiry, changed generators and revoke are not checked, because no private key of an admin is set, in --identity, SAUCE_IDENTITY, SOPS_AGE_KEY_FILE or ~/.config/sops/age/keys.txt.
+```
+
+`✓` marks a secret whose file exists, and `✗` a secret whose file is missing.
+The last line is on stderr, and it says that `sauce list` has no key to open the files with.
+
+Make every secret that `sauce` can make.
 
 ```sh
 sauce generate
 ```
 
-This creates `hedgedoc/db-password`, `kanidm/idm-admin-password`, `sso/hedgedoc`, `sso/miniflux`, `restic/password` and `backup/ssh-key`, with `secrets/backup/ssh-key.pub` next to it.
-It cannot make `ddclient/api-token`, because that token comes from your DNS provider.
-Make the token in the dashboard of the provider, and paste it in.
+```
+created backup/ssh-key, with its public key in example/secrets/backup/ssh-key.pub
+created hedgedoc/db-password
+created kanidm/idm-admin-password
+created restic/password
+created sso/hedgedoc
+created sso/miniflux
+ddclient/api-token has no file, and `sauce set ddclient/api-token` gives it one
+```
+
+Each secret is encrypted for the admin keys and for the machines that read it, so this needs no private key.
+A second run changes nothing.
+When a machine starts or stops reading a secret, the next run lists the keys that change, asks, and encrypts the secret again with the private key of an admin.
+
+`ddclient/api-token` comes from your DNS provider, so you paste it in at a hidden prompt.
 
 ```sh
 sauce set ddclient/api-token --expires 2027-05-15
 ```
 
-Commit the secrets and deploy.
+```
+Value of ddclient/api-token:
+set ddclient/api-token, version 1
+```
+
+`sauce set` also reads the value from a pipe, as it is, with no newline removed.
+
+Look at the secret.
+
+```sh
+sauce get ddclient/api-token
+```
+
+```
+name: ddclient/api-token
+file: example/secrets/ddclient/api-token.sauce
+note: API token for the DNS zone example.com, made in the dashboard of the DNS provider.
+reader: admin age1kv6aj53yzlf5wyu32qnv39wh68apzgkqpv49c0g0zvh5fzpjqcyscym83z
+reader: notes age1jlamuy0qf6z0mgnw0epd8j9p678gdr8ca45nnsmvrslffujcwg9s05xze5
+The facts are encrypted, and no private key of an admin is set, in --identity, SAUCE_IDENTITY, SOPS_AGE_KEY_FILE or ~/.config/sops/age/keys.txt.
+```
+
+The last line names the four places, in order, where `sauce` looks for the private key of an admin.
+Give it the throwaway admin key of this example.
+
+```sh
+export SAUCE_IDENTITY=snakeoil/admin.key
+sauce get ddclient/api-token
+```
+
+```
+name: ddclient/api-token
+file: example/secrets/ddclient/api-token.sauce
+note: API token for the DNS zone example.com, made in the dashboard of the DNS provider.
+reader: admin age1kv6aj53yzlf5wyu32qnv39wh68apzgkqpv49c0g0zvh5fzpjqcyscym83z
+reader: notes age1jlamuy0qf6z0mgnw0epd8j9p678gdr8ca45nnsmvrslffujcwg9s05xze5
+version: 1
+set: 2026-11-18
+expires: 2027-05-15
+made by: sauce set
+```
+
+`sauce get ddclient/api-token --print` writes the value to stdout and nothing else, so it works in a pipe.
+
+With the key of an admin, `sauce list` opens the files, and marks `⚠` each secret whose declared file has a row in `sauce status`.
+
+```sh
+sauce list
+```
+
+```
+SECRET                     MACHINES        MADE BY          STATE
+backup/ssh-key             backup,offsite  ssh-ed25519      ✓
+ddclient/api-token         notes           set              ✓
+hedgedoc/db-password       notes           alphanum, 40<48  ✓
+kanidm/idm-admin-password  notes           alphanum, 40<48  ✓
+restic/password            notes,offsite   once hex, 32 B   ✓
+sso/hedgedoc               notes           alphanum, 40<48  ✓
+sso/miniflux               notes           alphanum, 40<48  ✓
+```
+
+See what needs attention.
+
+```sh
+sauce status
+```
+
+```
+Nothing needs attention.
+```
+
+It lists a secret with no file, a file that no machine declares, and a file whose readers differ from the declaration.
+With the key of an admin it also lists a secret that expires in the next 30 days, a secret marked `revoke`, and a secret whose generator changed.
+
+Find a secret by a part of its name.
+
+```sh
+sauce search
+```
+
+The list draws on the terminal, with no value, and narrows as you type.
+
+```
+? Secret › sso
+❯ sso/hedgedoc               notes           generator encoding=alphanum min=40 max=48
+  sso/miniflux               notes           generator encoding=alphanum min=40 max=48
+  hedgedoc/db-password       notes           generator encoding=alphanum min=40 max=48
+  kanidm/idm-admin-password  notes           generator encoding=alphanum min=40 max=48
+  restic/password            notes,offsite   once encoding=hex bytes=32
+  backup/ssh-key             backup,offsite  generator keypair=ssh-ed25519
+```
+
+Enter prints the name, so `sauce get "$(sauce search)" --print` works.
+With no terminal, `sauce search sso` prints the names that hold `sso`, one on each line.
+
+Make new values for the SSO client secrets.
+
+```sh
+sauce rotate 'sso/*'
+```
+
+```
+These secrets get a new value:
+  sso/hedgedoc
+  sso/miniflux
+Rotate them? [y/N] y
+rotated sso/hedgedoc, version 2
+rotated sso/miniflux, version 2
+```
+
+In a pattern, `*` stands for any text, `/` included, and an exact name rotates with no question.
+`sauce rotate` needs the key of an admin, because it keeps the encrypted facts and counts the version on.
+It refuses a `once` secret, because a new restic password would lock you out of the old backups.
+
+```sh
+sauce rotate restic/password
+```
+
+```
+error: restic/password is `once`, and a new value would lose what the old one protects
+```
+
+Change one value in your editor.
+
+```sh
+sauce edit ddclient/api-token
+```
+
+```
+edited ddclient/api-token, version 2
+```
+
+`sauce edit` writes the value to a file with mode 0600, in a folder of its own in `$XDG_RUNTIME_DIR`, and removes the folder when the editor closes.
+It refuses to start when that folder is not in memory.
+Turn off any editor setting that keeps backups or undo history in another folder.
+
+Copy a value to paste it somewhere.
+
+```sh
+sauce get ddclient/api-token --copy
+```
+
+```
+Copied ddclient/api-token to the clipboard for 30 seconds. A clipboard history of the desktop keeps a copy of its own.
+```
+
+It needs `wl-copy` or `xclip`.
+Over SSH with no display it stops with an error and puts the value nowhere.
+
+## Deploy
+
+A flake sees only the files that git tracks, so add the secrets before you build a machine.
 
 ```sh
 git add secrets
-git commit -m "Add secrets"
-nixos-rebuild switch --flake .#notes --target-host root@notes.example.com
-nixos-rebuild switch --flake .#backup --target-host root@backup.example.com
-nixos-rebuild switch --flake .#offsite --target-host root@offsite.example.com
 ```
 
-`notes` reads `secrets/backup/ssh-key.pub` when Nix evaluates it, so it fails to evaluate until `sauce generate` has run.
+Without that step, `nix build .#nixosConfigurations.backup.config.system.build.toplevel` stops at evaluation and names the secret.
 
-## Later
+```
+       Failed assertions:
+       - sauce.secrets."backup/ssh-key" has no file at example/secrets/backup/ssh-key.sauce. Run `sauce generate`, or `sauce set backup/ssh-key` for a secret that you bring yourself, and then `git add` the file, because a flake in git does not see a file that git does not track.
+       - The ‘fileSystems’ option does not specify your root file system.
+       - You must set the option ‘boot.loader.grub.devices’ or 'boot.loader.grub.mirroredBoots' to make the system bootable.
+```
 
-Make a new database password.
+The last two lines are there because the machines of this example leave out their disks and boot loader.
+
+On the machine, at every activation, `sauce-install` opens each `.sauce` file of the machine with the key in `sauce.identityFile`.
+It writes each secret to `/run/sauce/<name>`, and each template to `/run/sauce/rendered/<name>`, on a ramfs, with the owner and mode of the declaration.
+It restarts the units in `restartUnits` of a secret or template whose value changed.
+When one file does not open, the activation fails and the secrets of the last activation stay in place.
+The Nix store of the machine holds only the encrypted files.
+
+## Your own repository
+
+Add this repository as the flake input `secret-sauce`, and import `secret-sauce.nixosModules.default` in each machine, as `flake.nix` here does.
+Then this shell gives the `sauce` of your lock file.
 
 ```sh
-sauce rotate 'hedgedoc/*'
-git commit -am "Rotate hedgedoc secrets"
+nix shell --inputs-from . secret-sauce#sauce
 ```
 
-Then deploy `notes`.
-PostgreSQL takes the new password and HedgeDoc restarts with it, in the same activation.
-
-`sauce rotate 'restic/*'` skips `restic/password`, because it is `once`.
-A new restic password would lock you out of the old backups.
-
-`sauce status` warns before `ddclient/api-token` expires.
-Make a new token at the provider and run `sauce set ddclient/api-token --expires <date>` again.
-
-## What git holds
-
-```
-.
-├── README.md
-├── flake.lock
-├── flake.nix
-├── machines
-│   ├── backup.nix
-│   ├── notes.nix
-│   └── offsite.nix
-├── services
-│   ├── ddclient.nix
-│   ├── default.nix
-│   ├── hedgedoc.nix
-│   ├── kanidm.nix
-│   ├── miniflux.nix
-│   ├── openssh.nix
-│   ├── postgresql.nix
-│   ├── restic-check.nix
-│   ├── restic.nix
-│   └── rsync.nix
-└── secrets
-    ├── backup
-    │   ├── ssh-key.pub
-    │   └── ssh-key.sauce
-    ├── ddclient
-    │   └── api-token.sauce
-    ├── hedgedoc
-    │   └── db-password.sauce
-    ├── kanidm
-    │   └── idm-admin-password.sauce
-    ├── restic
-    │   └── password.sauce
-    └── sso
-        ├── hedgedoc.sauce
-        └── miniflux.sauce
-```
-
-This folder has no `flake.lock` and no `secrets` yet, because `sauce` cannot make a `.sauce` file yet.
-
-The age keys in this example are throwaway keys.
-Their private halves were deleted right after they were made, so nobody can open a secret encrypted for them.
+Make an age key for yourself with `age-keygen`, and put its public key in `sauce.adminRecipients`.
+`sauce` also finds the age key that you use with sops, in `SOPS_AGE_KEY_FILE` or `~/.config/sops/age/keys.txt`.
+On each machine, make its key with `age-keygen -o /var/lib/sauce/host.key`, and put the public key that it prints in `sauce.recipient` of that machine.
+Then run `sauce generate`, `git add` the secrets, and deploy.

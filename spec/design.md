@@ -90,13 +90,16 @@ It shows what it is about to do and asks first.
 Next to each name it shows which hosts use it, how it is made, when it last changed and when it expires.
 It never shows a value, so it is safe on a shared screen.
 The names and the hosts are plain text in each file, so `sauce search` lists them with no key.
-The other facts are encrypted, so `sauce search`, `sauce get` and `sauce status` need your private key to show them.
+The other facts are encrypted, so `sauce search`, `sauce get`, `sauce status` and `sauce list` need your private key to show them.
 
 `sauce get <name>` prints the same facts for one secret.
 You get the value only when you ask for it, with `--copy`, `--print` or `--exec`.
 
 `sauce status` lists what needs attention.
 That is tokens that have expired or are about to, secrets that are declared but not created, and secrets that no host uses any more.
+
+`sauce list`, `sauce get`, `sauce status` and `sauce search` can reuse a private cache of declarations, and check the flake fingerprint, Nix version and settings at the same time.
+A changed declaration triggers a new evaluation, and commands that write secrets always evaluate live unless given `--manifest`.
 
 ## What ends up in git
 
@@ -174,7 +177,9 @@ One rule applies: the age readers of a single secret move together, because age 
 
 This part runs like sops-nix.
 At activation, a program called `sauce-install` decrypts the host's secrets with the host's key and writes them to `/run/sauce`, which lives in memory.
+That memory is a tmpfs of 16 MiB that never goes to swap, which needs Linux 6.4 or later.
 The Nix store holds only the encrypted files.
+When a host has no secret left, the next activation removes `/run/sauce` and the files in it.
 
 If a secret cannot be decrypted, the activation fails.
 A deploy tool that rolls back on failure then rolls back.
@@ -224,9 +229,12 @@ Between the two deploys they disagree.
 A post-quantum secret with a GPG reader is only as strong as the GPG key.
 `sauce status` points those out.
 
+A service that owns a secret can make its file larger until the 16 MiB are full, and then the next activation fails and the current secrets stay.
+
+Linux refuses a tmpfs that never goes to swap in an unprivileged user namespace, so secret-sauce does not support containers.
+
 ## How it is built
 
-The plan is Go, for both `sauce` and `sauce-install`.
-The age reference library is Go, and `sauce-install` can start as a fork of the sops-nix installer, so templates, unit restarts and `neededForUsers` behave the way people already know.
+`sauce-install` handles templates, unit restarts and `neededForUsers` the way sops-nix does, so they behave the way people already know.
 
 `spec/format.md` comes first, before any code, and gets a security review of its own.

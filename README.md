@@ -22,3 +22,10 @@ It makes the values, pads them, and encrypts each one for the hosts that use it 
 
 None of this is built yet.
 The design is in [`spec/`](spec/).
+
+## Independent decryption
+
+Run `python tools/sauce-decrypt.py secret.sauce identity.key --name secret/name` to open a file with an age X25519 identity.
+The program prints the facts and the value length.
+Add `--print` to print the value instead of its length.
+The development shell provides Python and `cryptography`.

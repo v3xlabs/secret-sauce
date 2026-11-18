@@ -10,5 +10,5 @@
     self.nixosModules.openssh
   ];
 
-  sauce.recipient = "age1k3jp7hs9alfvd6v4dw5tnyvc62ww9dlehjfa7eukxwgatx9t042swx2d2f";
+  sauce.recipient = "age1jlamuy0qf6z0mgnw0epd8j9p678gdr8ca45nnsmvrslffujcwg9s05xze5";
 }

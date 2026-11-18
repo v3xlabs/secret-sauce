@@ -1,0 +1,15 @@
+[package]
+name = "sauce-install"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+age = { workspace = true }
+sauce = { path = "../sauce" }
+serde = { workspace = true, features = ["derive", "std"] }
+serde_json = { workspace = true, features = ["std"] }
+thiserror = { workspace = true, features = ["std"] }
+zeroize = { workspace = true, features = ["alloc"] }
+
+[lints]
+workspace = true
