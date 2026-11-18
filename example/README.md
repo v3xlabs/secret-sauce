@@ -83,6 +83,9 @@ A second run reports that no files changed.
 When a machine starts or stops reading a secret, `sauce generate` shows the exact keys that change and asks before it writes any file.
 Re-encrypting existing files needs the private key of an admin.
 
+`sauce generate --dry-run` prints the same action lines without writing any files or asking for a key.
+It lists files to create, files to re-encrypt, and secrets whose value you must supply.
+
 `ddclient/api-token` comes from your DNS provider, so you paste it in at a hidden prompt.
 
 ```sh

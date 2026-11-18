@@ -234,10 +234,10 @@ impl From<Machines> for ReadManifests {
 
 impl ReadManifests {
     pub fn eval(flake: &Path) -> Result<Self, ReadError> {
-        match Machines::eval_bulk(flake) {
+        match Machines::eval_bulk(flake, true) {
             Ok(machines) => Ok(Self::Complete(machines)),
             Err(error @ ReadError::Eval { .. }) => {
-                retry_machines(flake).map(Self::Partial).ok_or(error)
+                retry_machines(flake, true).map(Self::Partial).ok_or(error)
             }
             Err(error) => Err(error),
         }
@@ -261,16 +261,24 @@ impl ReadManifests {
 impl Machines {
     /// Reads every machine of the flake in the folder `flake` with one `nix eval`, which never builds.
     pub fn eval(flake: &Path) -> Result<Self, ReadError> {
-        match Self::eval_bulk(flake) {
+        Self::eval_with_lock_write(flake, true)
+    }
+
+    pub fn eval_read_only(flake: &Path) -> Result<Self, ReadError> {
+        Self::eval_with_lock_write(flake, false)
+    }
+
+    fn eval_with_lock_write(flake: &Path, write_lock: bool) -> Result<Self, ReadError> {
+        match Self::eval_bulk(flake, write_lock) {
             Ok(machines) => Ok(machines),
-            Err(error @ ReadError::Eval { .. }) => Err(retry_machines(flake)
+            Err(error @ ReadError::Eval { .. }) => Err(retry_machines(flake, write_lock)
                 .map_or(error, |partial| ReadError::FailedMachines(partial.failures))),
             Err(error) => Err(error),
         }
     }
 
-    fn eval_bulk(flake: &Path) -> Result<Self, ReadError> {
-        let output = nix_eval(flake, MANIFESTS)?;
+    fn eval_bulk(flake: &Path, write_lock: bool) -> Result<Self, ReadError> {
+        let output = nix_eval(flake, MANIFESTS, write_lock)?;
         eprint!("{}", String::from_utf8_lossy(&output.stderr));
         Ok(serde_json::from_slice(&output.stdout)?)
     }
@@ -394,21 +402,25 @@ pub fn source_root(flake: &Path) -> &Path {
         .unwrap_or(flake)
 }
 
-fn eval_machine(flake: &Path, name: &str) -> Result<Option<Manifest>, ReadError> {
+fn eval_machine(flake: &Path, name: &str, write_lock: bool) -> Result<Option<Manifest>, ReadError> {
     let name = name
         .replace('\\', "\\\\")
         .replace('\r', "\\r")
         .replace('"', "\\\"")
         .replace("${", "\\${");
     let apply = format!("machines: ({MACHINE_MANIFEST}) (builtins.getAttr \"{name}\" machines)");
-    let output = nix_eval(flake, &apply)?;
+    let output = nix_eval(flake, &apply, write_lock)?;
     Ok(serde_json::from_slice(&output.stdout)?)
 }
 
-fn nix_eval(flake: &Path, apply: &str) -> Result<Output, ReadError> {
-    let output = Command::new("nix")
+fn nix_eval(flake: &Path, apply: &str, write_lock: bool) -> Result<Output, ReadError> {
+    let mut command = Command::new("nix");
+    command.args(["eval", "--json"]);
+    if !write_lock {
+        command.arg("--no-write-lock-file");
+    }
+    let output = command
         .current_dir(flake)
-        .args(["eval", "--json"])
         .args(["--option", "allow-import-from-derivation", "false"])
         .args([".#nixosConfigurations", "--apply", apply])
         .output()
@@ -424,8 +436,8 @@ fn nix_eval(flake: &Path, apply: &str) -> Result<Output, ReadError> {
     Ok(output)
 }
 
-fn retry_machines(flake: &Path) -> Option<PartialManifests> {
-    let output = nix_eval(flake, "builtins.attrNames").ok()?;
+fn retry_machines(flake: &Path, write_lock: bool) -> Option<PartialManifests> {
+    let output = nix_eval(flake, "builtins.attrNames", write_lock).ok()?;
     let names: Vec<String> = serde_json::from_slice(&output.stdout).ok()?;
     let next = AtomicUsize::new(0);
     let mut machines = BTreeMap::new();
@@ -435,7 +447,7 @@ fn retry_machines(flake: &Path) -> Option<PartialManifests> {
             .map(|_| {
                 scope.spawn(|| {
                     std::iter::from_fn(|| names.get(next.fetch_add(1, Ordering::Relaxed)))
-                        .map(|name| (name, eval_machine(flake, name)))
+                        .map(|name| (name, eval_machine(flake, name, write_lock)))
                         .collect::<Vec<_>>()
                 })
             })

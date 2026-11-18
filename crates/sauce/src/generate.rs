@@ -83,45 +83,102 @@ struct Change<'a> {
     bound: usize,
 }
 
+struct Creation<'a> {
+    name: &'a Name,
+    secret: &'a Secret<'a>,
+    path: PathBuf,
+    recipe: Recipe,
+}
+
 /// Creates the file of every secret that `sauce` can make and that has none, and re-encrypts every file whose readers changed.
 pub fn generate(
     machines: &Machines,
     root: &Path,
     identity: Option<&Path>,
+    dry_run: bool,
 ) -> Result<(), GenerateError> {
     let secrets = machines.secrets()?;
-    let mut created = Vec::new();
+    let mut creations = Vec::new();
     let mut changes = Vec::new();
     let mut unset = Vec::new();
     for (name, secret) in &secrets {
         match step(name, secret, root)? {
-            Step::Create(path, recipe) => {
-                let made = recipe.make();
-                let facts = Facts {
-                    version: 1,
-                    set: Date::today(),
-                    issued: None,
-                    expires: None,
-                    generator: secret.definition.digest(),
-                    formerly: Vec::new(),
-                    revoke: false,
-                };
-                let text =
-                    format::write(name, &made.value, &facts, recipe.bound(), &secret.readers)
-                        .map_err(|source| GenerateError::Encrypt {
-                            name: name.clone(),
-                            source: Box::new(source),
-                        })?;
-                created.push((name, path, text, made.public));
-            }
+            Step::Create(path, recipe) => creations.push(Creation {
+                name,
+                secret,
+                path,
+                recipe,
+            }),
             Step::Change(change) => changes.push(change),
             Step::Set => unset.push(name),
             Step::None => {}
         }
     }
 
-    if !changes.is_empty() && !confirm(&changes, created.len()).map_err(GenerateError::Prompt)? {
+    let palette = Palette::stdout();
+    if dry_run {
+        let readers = creations
+            .iter()
+            .map(|creation| (creation.name, creation.secret.readers.as_slice()))
+            .chain(changes.iter().map(|change| (change.name, change.readers)));
+        for (name, readers) in readers {
+            format::validate_readers(readers).map_err(|source| GenerateError::Encrypt {
+                name: name.clone(),
+                source: Box::new(source),
+            })?;
+        }
+        println!("Dry run. No files will be written.");
+        for creation in &creations {
+            let public = matches!(creation.recipe, Recipe::Ed25519)
+                .then(|| creation.path.with_extension("pub"));
+            print_created(creation.name, public.as_deref(), root, palette);
+        }
+        for change in &changes {
+            print_reencrypted(change.name, palette);
+        }
+        summarize(creations.len(), changes.len(), &unset, palette);
+        return Ok(());
+    }
+
+    apply(creations, changes, &unset, root, identity, palette)
+}
+
+fn apply(
+    creations: Vec<Creation<'_>>,
+    changes: Vec<Change<'_>>,
+    unset: &[&Name],
+    root: &Path,
+    identity: Option<&Path>,
+    palette: Palette,
+) -> Result<(), GenerateError> {
+    if !changes.is_empty() && !confirm(&changes, creations.len()).map_err(GenerateError::Prompt)? {
         return Err(GenerateError::NotConfirmed);
+    }
+    let created_count = creations.len();
+    let mut created = Vec::with_capacity(created_count);
+    for Creation {
+        name,
+        secret,
+        path,
+        recipe,
+    } in creations
+    {
+        let made = recipe.make();
+        let facts = Facts {
+            version: 1,
+            set: Date::today(),
+            issued: None,
+            expires: None,
+            generator: secret.definition.digest(),
+            formerly: Vec::new(),
+            revoke: false,
+        };
+        let text = format::write(name, &made.value, &facts, recipe.bound(), &secret.readers)
+            .map_err(|source| GenerateError::Encrypt {
+                name: name.clone(),
+                source: Box::new(source),
+            })?;
+        created.push((name, path, text, made.public));
     }
     let mut reencrypted = Vec::with_capacity(changes.len());
     if !changes.is_empty() {
@@ -138,8 +195,6 @@ pub fn generate(
         }
     }
 
-    let palette = Palette::stdout();
-    let created_count = created.len();
     for (name, path, text, public) in created {
         // The public half goes first, so that a failed write leaves no private key without it.
         let public_path = path.with_extension("pub");
@@ -166,9 +221,9 @@ pub fn generate(
             path: path.clone(),
             source,
         })?;
-        println!("{} {name}", palette.paint(Color::Cyan, "re-encrypted"));
+        print_reencrypted(name, palette);
     }
-    summarize(created_count, reencrypted_count, &unset, palette);
+    summarize(created_count, reencrypted_count, unset, palette);
     Ok(())
 }
 
@@ -190,6 +245,10 @@ fn print_created(name: &Name, public: Option<&Path>, root: &Path, palette: Palet
         let shown = public.strip_prefix(root).unwrap_or(public);
         println!("{label} {name} & {}", shown.display());
     }
+}
+
+fn print_reencrypted(name: &Name, palette: Palette) {
+    println!("{} {name}", palette.paint(Color::Cyan, "re-encrypted"));
 }
 
 fn summarize(created: usize, reencrypted: usize, unset: &[&Name], palette: Palette) {

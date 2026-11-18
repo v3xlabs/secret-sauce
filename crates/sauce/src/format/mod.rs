@@ -81,19 +81,7 @@ pub fn write(
         return Err(WriteError::TooLong(bound));
     }
     let facts_step = seal::step(facts::longest(facts)).ok_or(WriteError::Facts)?;
-    if readers.is_empty() {
-        return Err(WriteError::NoReaders);
-    }
-    let recipients = readers
-        .iter()
-        .enumerate()
-        .map(|(index, reader)| {
-            let recipient = reader.age.parse::<age::x25519::Recipient>().ok();
-            recipient
-                .filter(|_| file::is_valid(reader))
-                .ok_or(WriteError::Reader(index))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let recipients = checked_recipients(readers)?.collect::<Result<Vec<_>, _>>()?;
 
     let file_key = FileKey::init_with_mut(|key| OsRng.fill_bytes(key));
     let keys = Keys::new(&file_key);
@@ -123,6 +111,24 @@ pub fn write(
         return Err(WriteError::TooLarge);
     }
     Ok(text)
+}
+
+pub fn validate_readers(readers: &[Reader]) -> Result<(), WriteError> {
+    checked_recipients(readers)?.try_for_each(|recipient| recipient.map(drop))
+}
+
+fn checked_recipients(
+    readers: &[Reader],
+) -> Result<impl Iterator<Item = Result<age::x25519::Recipient, WriteError>>, WriteError> {
+    if readers.is_empty() {
+        return Err(WriteError::NoReaders);
+    }
+    Ok(readers.iter().enumerate().map(|(index, reader)| {
+        let recipient = reader.age.parse::<age::x25519::Recipient>().ok();
+        recipient
+            .filter(|_| file::is_valid(reader))
+            .ok_or(WriteError::Reader(index))
+    }))
 }
 
 /// Reads the text of a `.sauce` file, and refuses a file larger than the largest before it reads more than that.

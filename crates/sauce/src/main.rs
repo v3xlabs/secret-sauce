@@ -54,6 +54,9 @@ enum Command {
     },
     /// Create every secret that sauce can make and that has no file, and re-encrypt every file whose readers changed.
     Generate {
+        /// Show what would change without writing files or using a private key.
+        #[arg(long)]
+        dry_run: bool,
         #[command(flatten)]
         source: Source,
         #[command(flatten)]
@@ -257,23 +260,37 @@ fn main() -> ExitCode {
     }
 }
 
+fn manifest_exit(machines: &ReadManifests) -> ExitCode {
+    if machines.failures().is_some() {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
 fn run(command: Command) -> Result<ExitCode, Box<dyn Error>> {
     match command {
         Command::List { source, identity } => {
             let (machines, root) = source.load_read()?;
             list(&machines, &root, identity.file.as_deref())?;
-            return Ok(if machines.failures().is_some() {
-                ExitCode::FAILURE
-            } else {
-                ExitCode::SUCCESS
-            });
+            return Ok(manifest_exit(&machines));
         }
-        Command::Generate { source, identity } => {
-            let (machines, root) = source.load(Machines::eval)?;
+        Command::Generate {
+            source,
+            identity,
+            dry_run,
+        } => {
+            let evaluate = if dry_run {
+                Machines::eval_read_only
+            } else {
+                Machines::eval
+            };
+            let (machines, root) = source.load(evaluate)?;
             Ok(generate::generate(
                 &machines,
                 &root,
                 identity.file.as_deref(),
+                dry_run,
             )?)
         }
         Command::Set {
@@ -309,11 +326,7 @@ fn run(command: Command) -> Result<ExitCode, Box<dyn Error>> {
         Command::Status { source, identity } => {
             let (machines, root) = source.load_read()?;
             status::status(&machines, &root, identity.file.as_deref())?;
-            return Ok(if machines.failures().is_some() {
-                ExitCode::FAILURE
-            } else {
-                ExitCode::SUCCESS
-            });
+            return Ok(manifest_exit(&machines));
         }
         Command::Edit {
             pattern,

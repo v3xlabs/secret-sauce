@@ -288,7 +288,11 @@
                 flags="--manifest ${manifests}"
                 keys=example/snakeoil
 
-                sauce generate $flags
+                mkdir -p example/secrets
+                sauce generate --dry-run $flags --identity "$keys/missing.key" </dev/null > preview
+                test -z "$(find example/secrets -mindepth 1 -print -quit)"
+                sauce generate $flags > generated
+                diff generated <(tail -n +2 preview)
                 find example/secrets -type f | sort | xargs sha256sum > first
                 sauce generate $flags
                 find example/secrets -type f | sort | xargs sha256sum | diff first -
@@ -349,6 +353,11 @@
                 [[ $(sauce get ddclient/api-token --print $flags) == edited-token ]]
                 sauce get ddclient/api-token $flags | grep -x 'note: API token for the DNS zone example.com, made in the dashboard of the DNS provider.'
                 [[ -z $(ls /dev/shm/run) ]]
+
+                files > before
+                sauce generate --dry-run --manifest ${widerManifests} --identity example/snakeoil/missing.key </dev/null > preview
+                grep -Fx 're-encrypted ddclient/api-token' preview
+                diff before <(files)
 
                 script -qec "sauce generate --manifest ${widerManifests}" /dev/null <<< y
                 script -qec "sauce generate $flags" /dev/null <<< y
