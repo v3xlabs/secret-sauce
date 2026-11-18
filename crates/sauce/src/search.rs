@@ -2,7 +2,7 @@ use std::io::{self, IsTerminal as _};
 
 use dialoguer::{FuzzySelect, theme::ColorfulTheme};
 
-use crate::manifest::{Machines, RuleError};
+use crate::manifest::{ReadManifests, RuleError};
 
 /// The rows of the picker on screen at one time, so that a long list scrolls and leaves the command line in view.
 const ROWS: usize = 15;
@@ -22,7 +22,7 @@ pub enum SearchError {
 /// Picks a secret on the terminal and prints its name, or prints every name that holds `text` with no terminal.
 ///
 /// The picker draws on stderr, so `sauce get "$(sauce search)"` works.
-pub fn search(machines: &Machines, text: Option<&str>) -> Result<(), SearchError> {
+pub fn search(machines: &ReadManifests, text: Option<&str>) -> Result<(), SearchError> {
     let secrets = machines.secrets()?;
     if !(io::stdin().is_terminal() && io::stderr().is_terminal()) {
         let text = text.unwrap_or_default();

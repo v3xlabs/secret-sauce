@@ -26,7 +26,7 @@ use sauce::format::{self, Date};
 use crate::{
     get::Out,
     identity::Admin,
-    manifest::{Machines, ReadError},
+    manifest::{Machines, ReadError, ReadManifests},
     set::Dates,
     status::StatusError,
 };
@@ -138,25 +138,38 @@ struct Source {
 
 impl Source {
     /// The manifests, and the folder that the files of the secrets are relative to.
-    fn load(
+    fn load<T: From<Machines>>(
         &self,
-        evaluate: fn(&Path) -> Result<Machines, ReadError>,
-    ) -> Result<(Machines, PathBuf), ReadError> {
+        evaluate: fn(&Path) -> Result<T, ReadError>,
+    ) -> Result<(T, PathBuf), ReadError> {
         let flake = fs::canonicalize(&self.flake).map_err(|source| ReadError::File {
             path: self.flake.clone(),
             source,
         })?;
         let machines = match &self.manifest {
-            Some(file) => Machines::read(file)?,
+            Some(file) => Machines::read(file)?.into(),
             None => evaluate(&flake)?,
         };
         Ok((machines, manifest::source_root(&flake).to_owned()))
     }
+
+    fn load_read(&self) -> Result<(ReadManifests, PathBuf), ReadError> {
+        let (manifests, root) = self.load(manifest_cache::load)?;
+        if let Some(failures) = manifests.failures() {
+            eprintln!("warning: incomplete manifest\n{failures}");
+        }
+        Ok((manifests, root))
+    }
 }
 
-fn list(machines: &Machines, root: &Path, identity: Option<&Path>) -> Result<(), Box<dyn Error>> {
+fn list(
+    machines: &ReadManifests,
+    root: &Path,
+    identity: Option<&Path>,
+) -> Result<(), Box<dyn Error>> {
     let secrets = machines.secrets()?;
     let admin = Admin::find_if_set(identity)?;
+    let partial = machines.failures().is_some();
     let today = Date::today();
     let mut rows = vec![HEADER.map(String::from)];
     for (name, secret) in &secrets {
@@ -166,7 +179,8 @@ fn list(machines: &Machines, root: &Path, identity: Option<&Path>) -> Result<(),
             None => "✗",
             Some(admin) => match format::load(&path) {
                 Ok(text)
-                    if status::problems(name, &text, secret, Some(admin), today).is_empty() =>
+                    if status::problems(name, &text, secret, Some(admin), today, partial)
+                        .is_empty() =>
                 {
                     "✓"
                 }
@@ -206,7 +220,7 @@ fn list(machines: &Machines, root: &Path, identity: Option<&Path>) -> Result<(),
 
 fn main() -> ExitCode {
     match run(Cli::parse().command) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(exit) => exit,
         Err(error) => {
             eprintln!("error: {error}");
             ExitCode::FAILURE
@@ -214,11 +228,16 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(command: Command) -> Result<(), Box<dyn Error>> {
+fn run(command: Command) -> Result<ExitCode, Box<dyn Error>> {
     match command {
         Command::List { source, identity } => {
-            let (machines, root) = source.load(manifest_cache::load)?;
-            list(&machines, &root, identity.file.as_deref())
+            let (machines, root) = source.load_read()?;
+            list(&machines, &root, identity.file.as_deref())?;
+            return Ok(if machines.failures().is_some() {
+                ExitCode::FAILURE
+            } else {
+                ExitCode::SUCCESS
+            });
         }
         Command::Generate { source, identity } => {
             let (machines, root) = source.load(Machines::eval)?;
@@ -259,8 +278,13 @@ fn run(command: Command) -> Result<(), Box<dyn Error>> {
             )?)
         }
         Command::Status { source, identity } => {
-            let (machines, root) = source.load(manifest_cache::load)?;
-            Ok(status::status(&machines, &root, identity.file.as_deref())?)
+            let (machines, root) = source.load_read()?;
+            status::status(&machines, &root, identity.file.as_deref())?;
+            return Ok(if machines.failures().is_some() {
+                ExitCode::FAILURE
+            } else {
+                ExitCode::SUCCESS
+            });
         }
         Command::Edit {
             name,
@@ -276,7 +300,7 @@ fn run(command: Command) -> Result<(), Box<dyn Error>> {
             )?)
         }
         Command::Search { text, source } => {
-            let (machines, _) = source.load(manifest_cache::load)?;
+            let (machines, _) = source.load_read()?;
             Ok(search::search(&machines, text.as_deref())?)
         }
         Command::Get {
@@ -286,7 +310,7 @@ fn run(command: Command) -> Result<(), Box<dyn Error>> {
             source,
             identity,
         } => {
-            let (machines, root) = source.load(manifest_cache::load)?;
+            let (machines, root) = source.load_read()?;
             let out = match (print, copy) {
                 (true, _) => Out::Print,
                 (false, true) => Out::Copy,
@@ -301,4 +325,5 @@ fn run(command: Command) -> Result<(), Box<dyn Error>> {
             )?)
         }
     }
+    .map(|()| ExitCode::SUCCESS)
 }

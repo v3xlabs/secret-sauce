@@ -2,7 +2,9 @@ use std::{
     collections::{BTreeMap, btree_map::Entry},
     fmt, fs, io,
     path::{Path, PathBuf},
-    process::{Command, ExitStatus, Stdio},
+    process::{Command, ExitStatus, Output},
+    sync::atomic::{AtomicUsize, Ordering},
+    thread,
 };
 
 use sauce::format::{Name, Reader};
@@ -18,10 +20,18 @@ builtins.mapAttrs (_: machine: machine.config.sauce.manifest) (
   )
 )";
 
+const MACHINE_MANIFEST: &str =
+    "machine: if machine.options ? sauce then machine.config.sauce.manifest else null";
+
+/// Each worker runs its own Nix evaluator, so cap concurrent CPU and memory use.
+const RETRY_WORKERS: usize = 4;
+
 #[derive(Debug, thiserror::Error)]
 pub enum ReadError {
-    #[error("nix eval failed with {0}")]
-    Eval(ExitStatus),
+    #[error("nix eval failed with {status}\n{stderr}")]
+    Eval { status: ExitStatus, stderr: String },
+    #[error("{0}")]
+    FailedMachines(MachineFailures),
     #[error("cannot read {}: {source}", path.display())]
     File {
         path: PathBuf,
@@ -79,6 +89,19 @@ pub struct Generator {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(transparent)]
 pub struct Machines(BTreeMap<String, Manifest>);
+
+pub enum ReadManifests {
+    Complete(Machines),
+    Partial(PartialManifests),
+}
+
+pub struct PartialManifests {
+    machines: Machines,
+    failures: MachineFailures,
+}
+
+#[derive(Debug)]
+pub struct MachineFailures(BTreeMap<String, ReadError>);
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -191,21 +214,64 @@ impl fmt::Display for Generator {
     }
 }
 
+impl fmt::Display for MachineFailures {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (i, (name, error)) in self.0.iter().enumerate() {
+            if i != 0 {
+                writeln!(f)?;
+            }
+            write!(f, "cannot evaluate machine {name:?}: {error}")?;
+        }
+        Ok(())
+    }
+}
+
+impl From<Machines> for ReadManifests {
+    fn from(machines: Machines) -> Self {
+        Self::Complete(machines)
+    }
+}
+
+impl ReadManifests {
+    pub fn eval(flake: &Path) -> Result<Self, ReadError> {
+        match Machines::eval_bulk(flake) {
+            Ok(machines) => Ok(Self::Complete(machines)),
+            Err(error @ ReadError::Eval { .. }) => {
+                retry_machines(flake).map(Self::Partial).ok_or(error)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    pub fn failures(&self) -> Option<&MachineFailures> {
+        match self {
+            Self::Complete(_) => None,
+            Self::Partial(partial) => Some(&partial.failures),
+        }
+    }
+
+    pub fn secrets(&self) -> Result<BTreeMap<Name, Secret<'_>>, RuleError> {
+        match self {
+            Self::Complete(machines) => machines.secrets(),
+            Self::Partial(partial) => partial.machines.join_secrets(true),
+        }
+    }
+}
+
 impl Machines {
     /// Reads every machine of the flake in the folder `flake` with one `nix eval`, which never builds.
     pub fn eval(flake: &Path) -> Result<Self, ReadError> {
-        let output = Command::new("nix")
-            .current_dir(flake)
-            .args(["eval", "--json"])
-            .args(["--option", "allow-import-from-derivation", "false"])
-            .arg(".#nixosConfigurations")
-            .args(["--apply", MANIFESTS])
-            .stderr(Stdio::inherit())
-            .output()
-            .map_err(ReadError::Nix)?;
-        if !output.status.success() {
-            return Err(ReadError::Eval(output.status));
+        match Self::eval_bulk(flake) {
+            Ok(machines) => Ok(machines),
+            Err(error @ ReadError::Eval { .. }) => Err(retry_machines(flake)
+                .map_or(error, |partial| ReadError::FailedMachines(partial.failures))),
+            Err(error) => Err(error),
         }
+    }
+
+    fn eval_bulk(flake: &Path) -> Result<Self, ReadError> {
+        let output = nix_eval(flake, MANIFESTS)?;
+        eprint!("{}", String::from_utf8_lossy(&output.stderr));
         Ok(serde_json::from_slice(&output.stdout)?)
     }
 
@@ -220,6 +286,10 @@ impl Machines {
 
     /// Joins the manifests by secret name, and checks the rules that need all machines at once.
     pub fn secrets(&self) -> Result<BTreeMap<Name, Secret<'_>>, RuleError> {
+        self.join_secrets(false)
+    }
+
+    fn join_secrets(&self, partial: bool) -> Result<BTreeMap<Name, Secret<'_>>, RuleError> {
         let mut secrets = BTreeMap::new();
         for (machine, manifest) in &self.0 {
             for (name, definition) in &manifest.secrets {
@@ -252,15 +322,20 @@ impl Machines {
         }
         for (machine, manifest) in &self.0 {
             for name in &manifest.read {
-                let secret = name
-                    .parse::<Name>()
-                    .ok()
-                    .and_then(|name| secrets.get_mut(&name))
-                    .ok_or_else(|| RuleError::Undefined {
-                        name: name.clone(),
-                        machine: machine.clone(),
-                    })?;
-                secret.machines.push(machine);
+                let undefined = || RuleError::Undefined {
+                    name: name.clone(),
+                    machine: machine.clone(),
+                };
+                let key = name.parse::<Name>().map_err(|source| RuleError::Name {
+                    name: name.clone(),
+                    machine: machine.clone(),
+                    source,
+                })?;
+                match secrets.get_mut(&key) {
+                    Some(secret) => secret.machines.push(machine),
+                    None if partial => {}
+                    None => return Err(undefined()),
+                }
             }
         }
         for secret in secrets.values_mut() {
@@ -317,6 +392,72 @@ pub fn source_root(flake: &Path) -> &Path {
         .ancestors()
         .find(|dir| dir.join(".git").exists())
         .unwrap_or(flake)
+}
+
+fn eval_machine(flake: &Path, name: &str) -> Result<Option<Manifest>, ReadError> {
+    let name = name
+        .replace('\\', "\\\\")
+        .replace('\r', "\\r")
+        .replace('"', "\\\"")
+        .replace("${", "\\${");
+    let apply = format!("machines: ({MACHINE_MANIFEST}) (builtins.getAttr \"{name}\" machines)");
+    let output = nix_eval(flake, &apply)?;
+    Ok(serde_json::from_slice(&output.stdout)?)
+}
+
+fn nix_eval(flake: &Path, apply: &str) -> Result<Output, ReadError> {
+    let output = Command::new("nix")
+        .current_dir(flake)
+        .args(["eval", "--json"])
+        .args(["--option", "allow-import-from-derivation", "false"])
+        .args([".#nixosConfigurations", "--apply", apply])
+        .output()
+        .map_err(ReadError::Nix)?;
+    if !output.status.success() {
+        return Err(ReadError::Eval {
+            status: output.status,
+            stderr: String::from_utf8_lossy(&output.stderr)
+                .trim_end()
+                .to_owned(),
+        });
+    }
+    Ok(output)
+}
+
+fn retry_machines(flake: &Path) -> Option<PartialManifests> {
+    let output = nix_eval(flake, "builtins.attrNames").ok()?;
+    let names: Vec<String> = serde_json::from_slice(&output.stdout).ok()?;
+    let next = AtomicUsize::new(0);
+    let mut machines = BTreeMap::new();
+    let mut failures = BTreeMap::new();
+    thread::scope(|scope| {
+        let workers: Vec<_> = (0..names.len().min(RETRY_WORKERS))
+            .map(|_| {
+                scope.spawn(|| {
+                    std::iter::from_fn(|| names.get(next.fetch_add(1, Ordering::Relaxed)))
+                        .map(|name| (name, eval_machine(flake, name)))
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        for worker in workers {
+            for (name, result) in worker.join().expect("manifest evaluation worker panicked") {
+                match result {
+                    Ok(Some(manifest)) => {
+                        machines.insert(name.clone(), manifest);
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        failures.insert(name.clone(), error);
+                    }
+                }
+            }
+        }
+    });
+    (!failures.is_empty()).then_some(PartialManifests {
+        machines: Machines(machines),
+        failures: MachineFailures(failures),
+    })
 }
 
 #[cfg(test)]

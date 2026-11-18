@@ -11,7 +11,7 @@ use rand::{RngCore as _, rngs::OsRng};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
-use crate::manifest::{Machines, ReadError};
+use crate::manifest::{Machines, ReadError, ReadManifests};
 
 // Bump when the stored declarations or evaluator arguments change.
 const CACHE_SCHEMA: u32 = 1;
@@ -122,24 +122,27 @@ fn env_path(name: &str) -> Option<PathBuf> {
         .filter(|path| path.is_absolute())
 }
 
-pub fn load(flake: &Path) -> Result<Machines, ReadError> {
+pub fn load(flake: &Path) -> Result<ReadManifests, ReadError> {
     let Some((path, key)) = cache_path(flake).and_then(|path| Some((path, cache_key(flake)?)))
     else {
-        return Machines::eval(flake);
+        return ReadManifests::eval(flake);
     };
     if let Some(cached) = read_cache(&path)
         && cached.key == key
     {
-        return Ok(cached.machines);
+        return Ok(cached.machines.into());
     }
-    let machines = Machines::eval(flake)?;
+    let machines = match ReadManifests::eval(flake)? {
+        ReadManifests::Complete(machines) => machines,
+        partial @ ReadManifests::Partial(_) => return Ok(partial),
+    };
     // Do not save an evaluation under the fingerprint of a worktree it did not read.
     if cache_key(flake).as_ref() != Some(&key) {
-        return Ok(machines);
+        return Ok(machines.into());
     }
     let cached = Cached { key, machines };
     let _ = save_cache(&path, &cached);
-    Ok(cached.machines)
+    Ok(cached.machines.into())
 }
 
 fn read_cache(path: &Path) -> Option<Cached> {

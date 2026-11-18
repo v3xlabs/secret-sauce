@@ -101,6 +101,16 @@ That is tokens that have expired or are about to, secrets that are declared but 
 `sauce list`, `sauce get`, `sauce status` and `sauce search` can reuse a private cache of declarations, and check the flake fingerprint, Nix version and settings at the same time.
 A changed declaration triggers a new evaluation, and commands that write secrets always evaluate live unless given `--manifest`.
 
+If the bulk evaluation fails, `sauce` evaluates the machines separately and names the ones that failed.
+If it cannot list the machines, all commands stop.
+`sauce list` and `sauce status` show what they can and exit nonzero.
+`sauce status` does not check for unused files or changes to readers until all machines evaluate.
+`sauce search` can find known secrets, and `sauce get` can show a known secret.
+A secret with no visible definition may be on a failed machine.
+`sauce` never saves a partial manifest, so each read repeats the evaluations while a machine is broken.
+On a flake with nine machines and one failure, this took about 3.6 seconds per read.
+Commands that write stop before changing any files, because a failed machine could be a reader of any secret.
+
 ## What ends up in git
 
 Each secret is one small text file, and it can live anywhere in your flake.

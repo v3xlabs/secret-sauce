@@ -8,7 +8,7 @@ use sauce::format::{self, Date, Name};
 
 use crate::{
     identity::{Admin, IdentityError},
-    manifest::{Machines, RuleError, Secret},
+    manifest::{ReadManifests, RuleError, Secret},
 };
 
 /// How many days before `expires` a secret shows up, so that a token from a provider can be renewed in time.
@@ -32,11 +32,12 @@ pub enum StatusError {
 ///
 /// The facts are encrypted, so expiry, a changed generator and `revoke` need the key of an admin.
 pub fn status(
-    machines: &Machines,
+    machines: &ReadManifests,
     root: &Path,
     identity: Option<&Path>,
 ) -> Result<(), StatusError> {
     let secrets = machines.secrets()?;
+    let partial = machines.failures().is_some();
     let admin = Admin::find_if_set(identity)?;
     let today = Date::today();
 
@@ -57,42 +58,44 @@ pub fn status(
             Err(source) => return Err(StatusError::Read { path, source }),
         };
         rows.extend(
-            problems(name, &text, secret, admin.as_ref(), today)
+            problems(name, &text, secret, admin.as_ref(), today, partial)
                 .into_iter()
                 .map(|problem| (name.to_string(), problem)),
         );
     }
 
-    let declared: BTreeSet<_> = secrets
-        .values()
-        .map(|secret| root.join(&secret.definition.file))
-        .collect();
-    let mut files = Vec::new();
-    sauce_files(root, &mut files, &mut rows);
-    for path in files.into_iter().filter(|path| !declared.contains(path)) {
-        let shown = path
-            .strip_prefix(root)
-            .unwrap_or(&path)
-            .display()
-            .to_string();
-        let row = match format::load(&path).map(|text| format::look(&text)) {
-            Ok(Ok((name, _))) => (
-                name.to_string(),
-                format!("has the file {shown}, and no machine declares it"),
-            ),
-            _ => (
-                shown,
-                String::from("is not a .sauce file that sauce can read"),
-            ),
-        };
-        rows.push(row);
+    if !partial {
+        let declared: BTreeSet<_> = secrets
+            .values()
+            .map(|secret| root.join(&secret.definition.file))
+            .collect();
+        let mut files = Vec::new();
+        sauce_files(root, &mut files, &mut rows);
+        for path in files.into_iter().filter(|path| !declared.contains(path)) {
+            let shown = path
+                .strip_prefix(root)
+                .unwrap_or(&path)
+                .display()
+                .to_string();
+            let row = match format::load(&path).map(|text| format::look(&text)) {
+                Ok(Ok((name, _))) => (
+                    name.to_string(),
+                    format!("has the file {shown}, and no machine declares it"),
+                ),
+                _ => (
+                    shown,
+                    String::from("is not a .sauce file that sauce can read"),
+                ),
+            };
+            rows.push(row);
+        }
     }
 
     let width = rows.iter().map(|(name, _)| name.len()).max().unwrap_or(0);
     for (name, problem) in &rows {
         println!("{name:width$}  {problem}");
     }
-    if rows.is_empty() {
+    if rows.is_empty() && !partial {
         println!("Nothing needs attention.");
     }
     if admin.is_none() {
@@ -116,6 +119,7 @@ pub fn problems(
     secret: &Secret<'_>,
     admin: Option<&Admin>,
     today: Date,
+    partial: bool,
 ) -> Vec<String> {
     let mut problems = Vec::new();
     let Ok((found, readers)) = format::look(text) else {
@@ -126,9 +130,15 @@ pub fn problems(
         problems.push(format!("has a file that holds secret {found}"));
         return problems;
     }
-    let declared = readers.iter().all(|reader| secret.readers.contains(reader))
-        && secret.readers.iter().all(|reader| readers.contains(reader));
-    if !declared {
+    if !partial
+        && (readers
+            .iter()
+            .any(|reader| !secret.readers.contains(reader))
+            || secret
+                .readers
+                .iter()
+                .any(|reader| !readers.contains(reader)))
+    {
         problems.push(String::from(
             "has other readers than the machines declare, and `sauce generate` encrypts it again",
         ));

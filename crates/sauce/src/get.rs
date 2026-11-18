@@ -8,7 +8,7 @@ use sauce::format::{self, Name, NameError};
 use crate::{
     clipboard::{self, CopyError},
     identity::{Admin, IdentityError, OpenError},
-    manifest::{Machines, RuleError},
+    manifest::{ReadManifests, RuleError},
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -19,6 +19,8 @@ pub enum GetError {
     Rule(#[from] RuleError),
     #[error("no machine declares secret {0}")]
     NotDeclared(Name),
+    #[error("secret {0} is not in the partial manifest and may be on a failed machine")]
+    NotInPartial(Name),
     #[error("cannot read {}: {source}", path.display())]
     Read {
         path: PathBuf,
@@ -55,7 +57,7 @@ pub enum Out {
 /// Prints the note and the readers of a secret, and its facts when the key of an admin is found.
 /// With [`Out::Print`] it writes the value to stdout and nothing else, and with [`Out::Copy`] it puts the value on the clipboard.
 pub fn get(
-    machines: &Machines,
+    machines: &ReadManifests,
     root: &Path,
     name: &str,
     out: Out,
@@ -63,9 +65,13 @@ pub fn get(
 ) -> Result<(), GetError> {
     let name = name.parse::<Name>()?;
     let secrets = machines.secrets()?;
-    let secret = secrets
-        .get(&name)
-        .ok_or_else(|| GetError::NotDeclared(name.clone()))?;
+    let secret = secrets.get(&name).ok_or_else(|| {
+        if machines.failures().is_some() {
+            GetError::NotInPartial(name.clone())
+        } else {
+            GetError::NotDeclared(name.clone())
+        }
+    })?;
     let path = root.join(&secret.definition.file);
     let text = format::load(&path).map_err(|source| GetError::Read {
         path: path.clone(),

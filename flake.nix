@@ -241,17 +241,23 @@
                     nixosConfigurations.fixture = {
                       options.sauce = {};
                       config.sauce.manifest = {
-                        recipient = "fixture";
+                        recipient = "${(manifest "backup").recipient}";
                         adminRecipients = [];
-                        secrets.''${import ./declaration.nix}.file = "fixture.sauce";
+                        secrets.''${import ./declaration.nix} = {
+                          file = "fixture.sauce";
+                          once = { encoding = "hex"; bytes = 16; };
+                        };
                         read = [];
                       };
                     };
+                    nixosConfigurations.broken =
+                      if import ./broken.nix then throw "fixture eval failure" else { options = {}; };
                   };
                 }
                 EOF
                 printf '"test/before"\n' > declaration.nix
-                git add flake.nix declaration.nix
+                printf 'false\n' > broken.nix
+                git add flake.nix declaration.nix broken.nix
                 sauce list | grep '^test/before '
                 cache=("$XDG_CACHE_HOME"/sauce/*.json)
                 before=$(stat -c %i "$cache")
@@ -261,6 +267,15 @@
                 sauce list > current
                 grep '^test/after ' current
                 ! grep '^test/before ' current
+
+                cp "$cache" complete-cache
+                printf 'true\n' > broken.nix
+                if sauce list > partial 2> failed; then exit 1; fi
+                grep '^test/after ' partial
+                cmp complete-cache "$cache"
+                if sauce generate > /dev/null 2> failed; then exit 1; fi
+                grep -F '"broken"' failed
+                test ! -e fixture.sauce
               '';
           generate =
             pkgs.runCommand "sauce-generate"
