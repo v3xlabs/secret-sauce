@@ -117,11 +117,11 @@ Each secret is one small text file, and it can live anywhere in your flake.
 As with `sopsFile` in sops-nix, you point the secret at its file.
 
 ```nix
-sauce.secrets."kanidm/oauth2/freshrss".file = ./kanidm/freshrss-oauth.sauce;
+sauce.secrets."kanidm/oauth2/freshrss".file = ./kanidm/freshrss-oauth.sauce.yaml;
 ```
 
 If you would rather not write that line for every secret, set a default directory one time.
-A secret with no `file` then gets `<name>.sauce` in that directory.
+A secret with no `file` then gets `<name>.sauce.yaml` in that directory.
 
 ```nix
 sauce.defaultDir = ./secrets;
@@ -130,7 +130,7 @@ sauce.defaultDir = ./secrets;
 This is what a file looks like.
 
 ```yaml
-# kanidm/freshrss-oauth.sauce
+# kanidm/freshrss-oauth.sauce.yaml
 sauce: 1
 name: kanidm/oauth2/freshrss
 commitment: Rz8x1KcQ...
@@ -155,7 +155,7 @@ The layout is borrowed from sops.
 `facts` holds the version, the dates and the other facts of the secret, encrypted with it.
 `keys` holds, for each reader, the piece they need to open it, and `for` says whether that reader is you or one of your hosts.
 `commitment` makes sure that every reader who opens the file gets the same secret.
-Because the name and the readers are in the file itself, `sauce search` finds every `.sauce` file in your flake without evaluating any Nix.
+Because the name and the readers are in the file itself, `sauce search` finds every `.sauce.yaml` file in your flake without evaluating any Nix.
 
 Three things are different from sops.
 
@@ -169,7 +169,7 @@ When a host starts or stops using a secret, `sauce generate` adjusts the readers
 
 The facts of a secret, such as its version and its expiry date, are encrypted too.
 
-A `.sauce` file is not a sops file, and sops and age cannot open one.
+A `.sauce.yaml` file is not a sops file, and sops and age cannot open one.
 To make up for that, `spec/format.md` describes the format and what it hides, and the repository will carry a second small decrypt tool that shares no code with `sauce`.
 You should never depend on `sauce` alone to get your secrets back.
 

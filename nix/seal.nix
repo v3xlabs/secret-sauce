@@ -4,7 +4,7 @@
   writeText,
   sauce,
 }:
-# A directory with one `<name>.sauce` file for each name in `values`, that only `machine` and the admins open.
+# A directory with one `<name>.sauce.yaml` file for each name in `values`, that only `machine` and the admins open.
 machine: values:
 let
   host = machine.networking.hostName;
@@ -13,7 +13,7 @@ let
       ${host} = {
         inherit (machine.sauce) recipient adminRecipients;
         read = [ ];
-        secrets = lib.mapAttrs (name: _: { file = "${name}.sauce"; }) values;
+        secrets = lib.mapAttrs (name: _: { file = "${name}.sauce.yaml"; }) values;
       };
     }
   );

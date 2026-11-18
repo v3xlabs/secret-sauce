@@ -1,6 +1,7 @@
-# The `.sauce` file format, version 1
+# The `.sauce.yaml` file format, version 1
 
-This file says what a `.sauce` file holds, how it is encrypted, and what it hides.
+Secret files end in `.sauce.yaml`.
+This file says what they hold, how they are encrypted, and what they hide.
 `spec/design.md` says why.
 The code of `sauce` in `crates/sauce` and its tests define the exact bytes, such as the grammar, the limits and the layout of the associated data.
 The first line of every file is the format number, so the format can change later under a new number.
@@ -47,6 +48,8 @@ generator: 5d1c09e7...
 
 The file is YAML in block style, in a strict subset that has one spelling for each field.
 A reader parses that subset itself, never with a YAML library, and rejects anything else.
+Do not rewrite the file with a YAML tool.
+The tool can emit valid YAML that a `sauce` reader rejects.
 A file is at most 1 MiB, so `sauce` refuses to write a file with more readers than that holds, and a reader stops after 1 MiB and refuses the file.
 A reader refuses `facts` or `value` when its length is not a step plus the 16-byte tag, before it decodes the field, as "Padding" says.
 
@@ -81,7 +84,7 @@ The size of `facts` shows nothing, except that a secret has many or long former 
 
 ## Encryption
 
-A `.sauce` file follows age where it can.
+A `.sauce.yaml` file follows age where it can.
 
 - Each write makes a new 16-byte file key from a cryptographic random number generator, as age does.
 - `sauce` wraps the file key for each reader with the age library, as age does in its header, so classical, post-quantum and plugin keys work as they do in age.
@@ -94,7 +97,7 @@ The zero nonce is safe because a key encrypts one message only.
 age uses a zero nonce the same way when it encrypts the file key in an X25519 stanza.
 
 The associated data of both messages is the format number, `name`, `commitment`, and the `for` and the public key of each reader.
-So a `.sauce` file opens only under the name of the secret it was written for.
+So a `.sauce.yaml` file opens only under the name of the secret it was written for.
 A file that you move to another folder still opens, when its secret has the same name.
 A `name` line that is edited by hand, or one more reader, makes the file fail to open.
 Writing needs public keys only, so somebody who can push could copy the file of one secret over another secret that the same machine reads, and the machine would put that value where it expects the other one.
@@ -114,10 +117,10 @@ It checks the name, the readers, `commitment` and `facts` as a read of the value
 
 These parts are different from age.
 
-- An age file is binary, with an HMAC over its whole header, and a `.sauce` file is text with no header HMAC.
+- An age file is binary, with an HMAC over its whole header, and a `.sauce.yaml` file is text with no header HMAC.
   The associated data covers the name and the readers, and `commitment` binds the file key, but nothing covers the bytes of the wraps.
 - An age payload mixes a random 16-byte nonce into its key and is encrypted in chunks of 64 KiB.
-  A `.sauce` file has no payload nonce, because each file key encrypts one file only, and each field is one message of at most 64 KiB.
+  A `.sauce.yaml` file has no payload nonce, because each file key encrypts one file only, and each field is one message of at most 64 KiB.
   Without that nonce, `commitment` depends on the file key alone, so somebody who guesses file keys can test each guess against the commitments of all files at once.
   With N files, a guess is N times as likely to hit one, which is still far out of reach with 128-bit file keys, but it is less margin than age keeps.
 - age does not pad, and `sauce` pads both fields.
@@ -146,7 +149,7 @@ Writing needs public keys only, so anybody who can push to your repository can r
 ## What is different from sops
 
 - sops shows the length of each value, and `sauce` pads every value to a step.
-- The values of one sops file share one data key, and each `.sauce` file is one secret with its own readers.
+- The values of one sops file share one data key, and each `.sauce.yaml` file is one secret with its own readers.
 - The facts of a secret, such as its expiry date, are encrypted next to its value.
-- sops stores a full age file for each age reader, and a `.sauce` file stores only the stanzas.
-- sops and age cannot open a `.sauce` file.
+- sops stores a full age file for each age reader, and a `.sauce.yaml` file stores only the stanzas.
+- sops and age cannot open a `.sauce.yaml` file.

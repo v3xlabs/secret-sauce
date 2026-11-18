@@ -193,8 +193,8 @@ def check_facts(data):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Open a sauce file with an age X25519 identity.")
-    parser.add_argument("file")
+    parser = argparse.ArgumentParser(description="Open a .sauce.yaml file with an age X25519 identity.")
+    parser.add_argument("file", metavar="SECRET.sauce.yaml")
     parser.add_argument("key")
     parser.add_argument("--name")
     parser.add_argument("--print", action="store_true", dest="print_value")

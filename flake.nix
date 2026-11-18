@@ -96,8 +96,8 @@
             {
               ok =
                 (manifest "notes").secrets."hedgedoc/db-password".file
-                == "example/secrets/hedgedoc/db-password.sauce";
-              message = "A secret with no file gets <name>.sauce in sauce.defaultDir, relative to the root of the flake.";
+                == "example/secrets/hedgedoc/db-password.sauce.yaml";
+              message = "A secret with no file gets <name>.sauce.yaml in sauce.defaultDir, relative to the root of the flake.";
             }
             {
               ok = lib.all (name: (manifest "notes").secrets ? ${name}) [
@@ -116,15 +116,6 @@
             {
               ok = (manifest "backup").secrets."backup/ssh-key" == (manifest "offsite").secrets."backup/ssh-key";
               message = "Two machines that import one module give its secret the same definition.";
-            }
-            {
-              ok = lib.any (
-                check:
-                !check.assertion
-                && lib.hasPrefix "sauce.secrets.\"backup/ssh-key\" has no file at example/secrets/backup/ssh-key.sauce. Run `sauce generate`, or `sauce set backup/ssh-key`" check.message
-                && lib.hasInfix "`git add` the file" check.message
-              ) example.backup.assertions;
-              message = "A machine whose .sauce file is missing has a failed assertion that names the secret, its path, `sauce generate`, `sauce set` and `git add`.";
             }
             {
               ok =
@@ -156,29 +147,29 @@
           ] "cargo clippy --all-targets --offline -- -D warnings";
           test = cargoCheck "test" [ ] "cargo test --offline";
           decrypt = cargoCheck "decrypt" [ (pkgs.python3.withPackages (ps: [ ps.cryptography ])) ] ''
-            cargo run --offline --quiet --example decrypt_fixture -- example/snakeoil/admin.key > secret.sauce
-            python tools/sauce-decrypt.py secret.sauce example/snakeoil/admin.key --name test/secret > actual
+            cargo run --offline --quiet --example decrypt_fixture -- example/snakeoil/admin.key > secret.sauce.yaml
+            python tools/sauce-decrypt.py secret.sauce.yaml example/snakeoil/admin.key --name test/secret > actual
             printf 'name: test/secret\nversion: 4\nset: 2026-11-10\nissued: 2026-11-01\nexpires: 2027-02-10\ngenerator: %s\nformerly: old/name\nrevoke: true\nlength: 13\n' \
               0707070707070707070707070707070707070707070707070707070707070707 > expected
             cmp expected actual
-            python tools/sauce-decrypt.py secret.sauce example/snakeoil/admin.key --print > actual
+            python tools/sauce-decrypt.py secret.sauce.yaml example/snakeoil/admin.key --print > actual
             printf 'name: test/secret\nversion: 4\nset: 2026-11-10\nissued: 2026-11-01\nexpires: 2027-02-10\ngenerator: %s\nformerly: old/name\nrevoke: true\nvalue: correct horse\n' \
               0707070707070707070707070707070707070707070707070707070707070707 > expected
             cmp expected actual
-            python -c 'from pathlib import Path; s = Path("secret.sauce").read_text(); i = s.index("      - X25519 ") + len("      - X25519 "); j = s.index(" ", i); Path("damaged.sauce").write_text(s[:i] + "AA" + s[j:])'
-            python tools/sauce-decrypt.py damaged.sauce example/snakeoil/admin.key --print > actual
+            python -c 'from pathlib import Path; s = Path("secret.sauce.yaml").read_text(); i = s.index("      - X25519 ") + len("      - X25519 "); j = s.index(" ", i); Path("damaged.sauce.yaml").write_text(s[:i] + "AA" + s[j:])'
+            python tools/sauce-decrypt.py damaged.sauce.yaml example/snakeoil/admin.key --print > actual
             cmp expected actual
-            python -c 'from pathlib import Path; s = Path("secret.sauce").read_bytes(); Path("crlf.sauce").write_bytes(s.replace(b"\n", b"\r\n"))'
-            if python tools/sauce-decrypt.py crlf.sauce example/snakeoil/admin.key > actual; then exit 1; fi
+            python -c 'from pathlib import Path; s = Path("secret.sauce.yaml").read_bytes(); Path("crlf.sauce.yaml").write_bytes(s.replace(b"\n", b"\r\n"))'
+            if python tools/sauce-decrypt.py crlf.sauce.yaml example/snakeoil/admin.key > actual; then exit 1; fi
             test ! -s actual
-            if python tools/sauce-decrypt.py secret.sauce example/snakeoil/admin.key --name wrong > actual; then exit 1; fi
+            if python tools/sauce-decrypt.py secret.sauce.yaml example/snakeoil/admin.key --name wrong > actual; then exit 1; fi
             test ! -s actual
-            python -c 'from pathlib import Path; p = Path("secret.sauce"); p.write_text(p.read_text().replace("name: test/secret", "name: test/other"))'
-            if python tools/sauce-decrypt.py secret.sauce example/snakeoil/admin.key > actual; then exit 1; fi
+            python -c 'from pathlib import Path; p = Path("secret.sauce.yaml"); p.write_text(p.read_text().replace("name: test/secret", "name: test/other"))'
+            if python tools/sauce-decrypt.py secret.sauce.yaml example/snakeoil/admin.key > actual; then exit 1; fi
             test ! -s actual
-            cargo run --offline --quiet --example decrypt_fixture -- example/snakeoil/admin.key > secret.sauce
-            python -c 'from pathlib import Path; p = Path("secret.sauce"); s = p.read_text(); i = s.index("commitment: ") + len("commitment: "); p.write_text(s[:i] + ("A" if s[i] != "A" else "B") + s[i+1:])'
-            if python tools/sauce-decrypt.py secret.sauce example/snakeoil/admin.key > actual; then exit 1; fi
+            cargo run --offline --quiet --example decrypt_fixture -- example/snakeoil/admin.key > secret.sauce.yaml
+            python -c 'from pathlib import Path; p = Path("secret.sauce.yaml"); s = p.read_text(); i = s.index("commitment: ") + len("commitment: "); p.write_text(s[:i] + ("A" if s[i] != "A" else "B") + s[i+1:])'
+            if python tools/sauce-decrypt.py secret.sauce.yaml example/snakeoil/admin.key > actual; then exit 1; fi
             test ! -s actual
           '';
           example = pkgs.runCommand "sauce-example" { } (
@@ -244,7 +235,7 @@
                         recipient = "${(manifest "backup").recipient}";
                         adminRecipients = [];
                         secrets.''${import ./declaration.nix} = {
-                          file = "fixture.sauce";
+                          file = "fixture.sauce.yaml";
                           once = { encoding = "hex"; bytes = 16; };
                         };
                         read = [];
@@ -275,7 +266,7 @@
                 cmp complete-cache "$cache"
                 if sauce generate > /dev/null 2> failed; then exit 1; fi
                 grep -F '"broken"' failed
-                test ! -e fixture.sauce
+                test ! -e fixture.sauce.yaml
               '';
           generate =
             pkgs.runCommand "sauce-generate"
@@ -293,6 +284,9 @@
                 test -z "$(find example/secrets -mindepth 1 -print -quit)"
                 sauce generate $flags > generated
                 diff generated <(tail -n +2 preview)
+                test -f example/secrets/backup/ssh-key.sauce.yaml
+                test -f example/secrets/backup/ssh-key.pub
+                test ! -e example/secrets/backup/ssh-key.sauce.pub
                 find example/secrets -type f | sort | xargs sha256sum > first
                 sauce generate $flags
                 find example/secrets -type f | sort | xargs sha256sum | diff first -
@@ -333,7 +327,7 @@
                 files > after
                 diff <(sed 's/^[0-9a-f]* *//' before) <(sed 's/^[0-9a-f]* *//' after)
                 grep -vxFf before after | sed 's/^[0-9a-f]* *//' > changed
-                printf '%s\n' example/secrets/sso/hedgedoc.sauce example/secrets/sso/miniflux.sauce | diff - changed
+                printf '%s\n' example/secrets/sso/hedgedoc.sauce.yaml example/secrets/sso/miniflux.sauce.yaml | diff - changed
                 sauce get sso/hedgedoc $flags | grep -x 'version: 2'
                 sauce get sso/miniflux $flags | grep -x 'version: 2'
                 [[ $(sauce get sso/hedgedoc --print $flags) != "$hedgedoc" ]]

@@ -108,7 +108,9 @@ impl<'a> Evaluator<'a> {
     pub fn check(&mut self, name: &Name, text: &str, secret: &Secret<'_>) -> Findings {
         let mut problems = Vec::new();
         let Ok((found, readers)) = format::look(text) else {
-            problems.push(String::from("has a file that is not in the .sauce format"));
+            problems.push(String::from(
+                "has a file that is not in the .sauce.yaml format",
+            ));
             return Findings::of(problems);
         };
         if found != *name {
@@ -253,7 +255,7 @@ pub fn status(
                 ),
                 _ => Row::warning(
                     shown,
-                    String::from("is not a .sauce file that sauce can read"),
+                    String::from("is not a .sauce.yaml file that sauce can read"),
                 ),
             });
         }
@@ -301,7 +303,7 @@ fn warn_unchecked() {
     );
 }
 
-/// Collects every `.sauce` file under `folder`, and skips hidden folders and symbolic links.
+/// Collects every `.sauce.yaml` file under `folder`, and skips hidden folders and symbolic links.
 /// A folder that cannot be read becomes a row, and the walk goes on.
 fn sauce_files(folder: &Path, files: &mut Vec<PathBuf>, rows: &mut Vec<Row>) {
     let entries = match fs::read_dir(folder) {
@@ -310,7 +312,7 @@ fn sauce_files(folder: &Path, files: &mut Vec<PathBuf>, rows: &mut Vec<Row>) {
             rows.push(Row::warning(
                 folder.display().to_string(),
                 format!(
-                    "cannot be read, so a .sauce file in it can be missing from this list: {error}"
+                    "cannot be read, so a .sauce.yaml file in it can be missing from this list: {error}"
                 ),
             ));
             return;
@@ -323,11 +325,7 @@ fn sauce_files(folder: &Path, files: &mut Vec<PathBuf>, rows: &mut Vec<Row>) {
         };
         if kind.is_dir() && !entry.file_name().to_string_lossy().starts_with('.') {
             sauce_files(&path, files, rows);
-        } else if kind.is_file()
-            && path
-                .extension()
-                .is_some_and(|extension| extension == "sauce")
-        {
+        } else if kind.is_file() && format::has_suffix(&path) {
             files.push(path);
         }
     }

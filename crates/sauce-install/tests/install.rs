@@ -58,7 +58,7 @@ fn seal(dir: &Path, machine: &str, name: &str, value: &str) -> PathBuf {
         &[reader],
     )
     .expect("a valid write");
-    let file = dir.join(format!("{machine}-{}.sauce", name.replace('/', "-")));
+    let file = dir.join(format!("{machine}-{}.sauce.yaml", name.replace('/', "-")));
     fs::write(&file, text).expect("a writable test folder");
     file
 }

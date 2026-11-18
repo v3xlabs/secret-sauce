@@ -75,7 +75,7 @@ let
         generator = optional generator "How `sauce` makes the value, and makes it again on `sauce rotate`.";
         once = optional once "How `sauce` makes the value one time.";
         note = optional types.str "Text that `sauce` shows next to the secret.";
-        file = optional types.path "The `.sauce` file of the secret.";
+        file = optional types.path "The `.sauce.yaml` file of the secret.";
         neededForUsers = mkOption {
           type = types.bool;
           default = false;
@@ -104,9 +104,12 @@ let
   sauceFile =
     name: secret:
     if secret.file != null then
-      secret.file
+      if builtins.match ".+\\.sauce\\.yaml" (baseNameOf (toString secret.file)) != null then
+        secret.file
+      else
+        throw "sauce.secrets.\"${name}\" sets `file` to ${toString secret.file}, which must end in .sauce.yaml."
     else if cfg.defaultDir != null then
-      cfg.defaultDir + "/${name}.sauce"
+      cfg.defaultDir + "/${name}.sauce.yaml"
     else
       null;
 
@@ -121,12 +124,12 @@ let
           sauceFile name secret
         else
           throw "sauce.secrets.\"${name}\" has no file, and sauce.defaultDir is not set.";
-      # A string such as "${self}/secrets/../x.sauce" keeps its `..`, and adding it to `/.` removes it as Nix does for a path.
+      # A string such as "${self}/secrets/../x.sauce.yaml" keeps its `..`, and adding it to `/.` removes it as Nix does for a path.
       file = toString (/. + builtins.unsafeDiscardStringContext (toString declared));
       relative = builtins.match inSource file;
     in
     if relative == null then
-      throw "sauce.secrets.\"${name}\" has the file ${file}, which is not in the source of a flake. Evaluate the machine from its flake, and give the file as a path such as ./${name}.sauce."
+      throw "sauce.secrets.\"${name}\" has the file ${file}, which is not in the source of a flake. Evaluate the machine from its flake, and give the file as a path such as ./${name}.sauce.yaml."
     else
       lib.head relative;
 
@@ -264,7 +267,7 @@ in
       description = "The text that stands for a secret in `content` of a template, by name.";
     };
 
-    defaultDir = optional types.path "The directory of the `.sauce` file of each secret that has no `file`.";
+    defaultDir = optional types.path "The directory of the `.sauce.yaml` file of each secret that has no `file`.";
 
     recipient = mkOption {
       type = types.str;
@@ -323,7 +326,7 @@ in
                 if defines name secret then
                   "Set sauce.defaultDir, or `file` of the secret."
                 else
-                  "Set sauce.defaultDir to the folder of the .sauce files, because this machine only reads the secret."
+                  "Set sauce.defaultDir to the folder of the .sauce.yaml files, because this machine only reads the secret."
               );
           }
         else

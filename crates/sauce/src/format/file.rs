@@ -17,14 +17,14 @@ pub struct Reader {
     pub age: String,
 }
 
-/// A text that is not a `.sauce` file.
+/// A text that is not a `.sauce.yaml` file.
 #[derive(Debug, thiserror::Error)]
-#[error("line {line} of the file is not in the `.sauce` format")]
+#[error("line {line} of the file is not in the `.sauce.yaml` format")]
 pub struct ParseError {
     pub line: usize,
 }
 
-/// The fields of a `.sauce` file, decoded and not checked by any key.
+/// The fields of a `.sauce.yaml` file, decoded and not checked by any key.
 pub struct File {
     pub name: Name,
     pub commitment: [u8; 32],

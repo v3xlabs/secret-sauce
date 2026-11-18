@@ -107,7 +107,7 @@ sauce get ddclient/api-token
 
 ```
 name: ddclient/api-token
-file: example/secrets/ddclient/api-token.sauce
+file: example/secrets/ddclient/api-token.sauce.yaml
 note: API token for the DNS zone example.com, made in the dashboard of the DNS provider.
 machines: notes
 readers: admin, notes
@@ -124,7 +124,7 @@ sauce get ddclient/api-token
 
 ```
 name: ddclient/api-token
-file: example/secrets/ddclient/api-token.sauce
+file: example/secrets/ddclient/api-token.sauce.yaml
 note: API token for the DNS zone example.com, made in the dashboard of the DNS provider.
 machines: notes
 readers: admin, notes
@@ -268,14 +268,14 @@ Without that step, `nix build .#nixosConfigurations.backup.config.system.build.t
 
 ```
        Failed assertions:
-       - sauce.secrets."backup/ssh-key" has no file at example/secrets/backup/ssh-key.sauce. Run `sauce generate`, or `sauce set backup/ssh-key` for a secret that you bring yourself, and then `git add` the file, because a flake in git does not see a file that git does not track.
+       - sauce.secrets."backup/ssh-key" has no file at example/secrets/backup/ssh-key.sauce.yaml. Run `sauce generate`, or `sauce set backup/ssh-key` for a secret that you bring yourself, and then `git add` the file, because a flake in git does not see a file that git does not track.
        - The ‘fileSystems’ option does not specify your root file system.
        - You must set the option ‘boot.loader.grub.devices’ or 'boot.loader.grub.mirroredBoots' to make the system bootable.
 ```
 
 The last two lines are there because the machines of this example leave out their disks and boot loader.
 
-On the machine, at every activation, `sauce-install` opens each `.sauce` file of the machine with the key in `sauce.identityFile`.
+On the machine, at every activation, `sauce-install` opens each `.sauce.yaml` file of the machine with the key in `sauce.identityFile`.
 It writes each secret to `/run/sauce/<name>`, and each template to `/run/sauce/rendered/<name>`, on a ramfs, with the owner and mode of the declaration.
 It restarts the units in `restartUnits` of a secret or template whose value changed.
 When one file does not open, the activation fails and the secrets of the last activation stay in place.

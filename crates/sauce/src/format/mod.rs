@@ -1,4 +1,4 @@
-//! One `.sauce` file, as `spec/format.md` describes it.
+//! One `.sauce.yaml` file, as `spec/format.md` describes it.
 
 mod facts;
 mod file;
@@ -21,7 +21,7 @@ use file::{Entry, File};
 use rand::{RngCore, rngs::OsRng};
 use seal::Keys;
 
-/// The largest `.sauce` file, in bytes, as `spec/format.md` says.
+/// The largest `.sauce.yaml` file, in bytes, as `spec/format.md` says.
 const LARGEST_FILE: usize = 1024 * 1024;
 
 #[derive(Debug, thiserror::Error)]
@@ -39,7 +39,7 @@ pub enum WriteError {
     )]
     Reader(usize),
     #[error(
-        "the file is larger than 1 MiB, the largest .sauce file, because it has too many readers"
+        "the file is larger than 1 MiB, the largest .sauce.yaml file, because it has too many readers"
     )]
     TooLarge,
     #[error("age cannot wrap the file key")]
@@ -131,7 +131,16 @@ fn checked_recipients(
     }))
 }
 
-/// Reads the text of a `.sauce` file, and refuses a file larger than the largest before it reads more than that.
+#[must_use]
+pub fn has_suffix(path: &Path) -> bool {
+    let suffix = b".sauce.yaml";
+    path.file_name().is_some_and(|name| {
+        let name = name.as_encoded_bytes();
+        name.len() > suffix.len() && name.ends_with(suffix)
+    })
+}
+
+/// Reads the text of a `.sauce.yaml` file, and refuses a file larger than the largest before it reads more than that.
 pub fn load(path: &Path) -> io::Result<String> {
     let mut bytes = Vec::new();
     fs::File::open(path)?
@@ -140,7 +149,7 @@ pub fn load(path: &Path) -> io::Result<String> {
     if bytes.len() > LARGEST_FILE {
         return Err(io::Error::new(
             io::ErrorKind::FileTooLarge,
-            "the file is larger than 1 MiB, the largest .sauce file",
+            "the file is larger than 1 MiB, the largest .sauce.yaml file",
         ));
     }
     String::from_utf8(bytes).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))

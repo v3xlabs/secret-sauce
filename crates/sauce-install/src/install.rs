@@ -68,9 +68,9 @@ pub enum Error {
         "{0} is in the way, because it is not a link that sauce-install made, so remove it by hand"
     )]
     Occupied(PathBuf),
-    #[error("sauce.secrets.\"{0}\" has no .sauce file, so run `sauce generate` first")]
+    #[error("sauce.secrets.\"{0}\" has no .sauce.yaml file, so run `sauce generate` first")]
     NoFile(String),
-    #[error("cannot open the .sauce file of sauce.secrets.\"{name}\": {source}")]
+    #[error("cannot open the .sauce.yaml file of sauce.secrets.\"{name}\": {source}")]
     Open { name: String, source: ReadError },
     #[error("cannot run systemctl {verb}: {source}")]
     Systemctl {
@@ -102,7 +102,7 @@ struct Output<'a> {
 struct Secret {
     #[serde(flatten)]
     delivery: Delivery,
-    /// The `.sauce` file in the Nix store, or nothing when the declared file does not exist.
+    /// The `.sauce.yaml` file in the Nix store, or nothing when the declared file does not exist.
     file: Option<PathBuf>,
     placeholder: String,
 }

@@ -13,7 +13,7 @@ const ED25519_BYTES: usize = 387;
 
 const HEX: &[u8] = b"0123456789abcdef";
 
-/// The longest value that a `.sauce` file holds, 4 bytes short of the largest step in `spec/format.md`.
+/// The longest value that a `.sauce.yaml` file holds, 4 bytes short of the largest step in `spec/format.md`.
 const LARGEST: usize = 65_532;
 
 /// The bound of a value that `sauce set` gives, from `spec/format.md`, as long as a declaration has no `maxLength`.

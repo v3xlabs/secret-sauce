@@ -155,7 +155,7 @@ pub fn rotate(
             source: Box::new(source),
         })?;
         if let Some(public) = made.public {
-            outputs.push((rotation.path.with_extension("pub"), format!("{public}\n")));
+            outputs.push((generate::public_path(&rotation.path), format!("{public}\n")));
         }
         outputs.push((rotation.path.clone(), text));
         versions.push((rotation.name, facts.version));

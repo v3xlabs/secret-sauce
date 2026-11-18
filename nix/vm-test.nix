@@ -21,8 +21,8 @@ let
   wrongKeyValue = "wrong-key-value-of-sso-hedgedoc";
 
   files = sealed machines.notes values;
-  changed = "${sealed machines.notes { "sso/hedgedoc" = changedValue; }}/sso/hedgedoc.sauce";
-  wrongKey = "${sealed machines.backup { "sso/hedgedoc" = wrongKeyValue; }}/sso/hedgedoc.sauce";
+  changed = "${sealed machines.notes { "sso/hedgedoc" = changedValue; }}/sso/hedgedoc.sauce.yaml";
+  wrongKey = "${sealed machines.backup { "sso/hedgedoc" = wrongKeyValue; }}/sso/hedgedoc.sauce.yaml";
 in
 pkgs.testers.runNixOSTest {
   name = "sauce-install";

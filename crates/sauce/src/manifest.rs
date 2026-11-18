@@ -7,7 +7,7 @@ use std::{
     thread,
 };
 
-use sauce::format::{Name, Reader};
+use sauce::format::{self, Name, Reader};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
@@ -54,6 +54,8 @@ pub enum RuleError {
         #[source]
         source: sauce::format::NameError,
     },
+    #[error("secret {name} has the file {}, which must end in .sauce.yaml", file.display())]
+    FileSuffix { name: Name, file: PathBuf },
     /// One name has one definition, so two machines that define it give it the same fields.
     #[error("secret {name} has a different {field} on {} and on {}", machines[0], machines[1])]
     Redefined {
@@ -70,7 +72,7 @@ pub enum RuleError {
 /// What a machine declares about one secret that it defines.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Definition {
-    /// The `.sauce` file, relative to [`source_root`].
+    /// The `.sauce.yaml` file, relative to [`source_root`].
     pub file: PathBuf,
     pub generator: Option<Generator>,
     pub once: Option<Once>,
@@ -306,6 +308,12 @@ impl Machines {
                     machine: machine.clone(),
                     source,
                 })?;
+                if !format::has_suffix(&definition.file) {
+                    return Err(RuleError::FileSuffix {
+                        name,
+                        file: definition.file.clone(),
+                    });
+                }
                 match secrets.entry(name) {
                     Entry::Vacant(entry) => {
                         entry.insert(Secret {
@@ -479,7 +487,7 @@ mod tests {
     #[test]
     fn declaration_that_sauce_cannot_make_keeps_its_long_form() {
         let definition: Definition = serde_json::from_str(
-            r#"{ "file": "secrets/a.sauce", "generator": { "encoding": "alphanum", "min": 40 } }"#,
+            r#"{ "file": "secrets/a.sauce.yaml", "generator": { "encoding": "alphanum", "min": 40 } }"#,
         )
         .unwrap();
 
@@ -489,7 +497,7 @@ mod tests {
     #[test]
     fn equal_bounds_show_one_length() {
         let definition: Definition = serde_json::from_str(
-            r#"{ "file": "secrets/a.sauce", "generator": { "encoding": "hex", "min": 32, "max": 32 } }"#,
+            r#"{ "file": "secrets/a.sauce.yaml", "generator": { "encoding": "hex", "min": 32, "max": 32 } }"#,
         )
         .unwrap();
 
@@ -506,7 +514,7 @@ mod tests {
                     "read": [],
                     "secrets": {
                         "backup/ssh-key": {
-                            "file": "secrets/backup/ssh-key.sauce",
+                            "file": "secrets/backup/ssh-key.sauce.yaml",
                             "generator": { "keypair": "ssh-ed25519" }
                         }
                     }
@@ -517,7 +525,7 @@ mod tests {
                     "read": [],
                     "secrets": {
                         "backup/ssh-key": {
-                            "file": "secrets/backup/ssh-key.sauce",
+                            "file": "secrets/backup/ssh-key.sauce.yaml",
                             "generator": { "keypair": "ssh-rsa" }
                         }
                     }

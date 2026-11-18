@@ -44,7 +44,7 @@ pub enum EditError {
         #[source]
         source: io::Error,
     },
-    #[error("{} is not a .sauce file: {source}", path.display())]
+    #[error("{} is not a .sauce.yaml file: {source}", path.display())]
     Parse {
         path: PathBuf,
         #[source]

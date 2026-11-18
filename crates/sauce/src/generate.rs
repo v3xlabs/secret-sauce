@@ -29,7 +29,7 @@ pub enum GenerateError {
         #[source]
         source: io::Error,
     },
-    #[error("{} is not a .sauce file: {source}", path.display())]
+    #[error("{} is not a .sauce.yaml file: {source}", path.display())]
     Parse {
         path: PathBuf,
         #[source]
@@ -129,8 +129,8 @@ pub fn generate(
         }
         println!("Dry run. No files will be written.");
         for creation in &creations {
-            let public = matches!(creation.recipe, Recipe::Ed25519)
-                .then(|| creation.path.with_extension("pub"));
+            let public =
+                matches!(creation.recipe, Recipe::Ed25519).then(|| public_path(&creation.path));
             print_created(creation.name, public.as_deref(), root, palette);
         }
         for change in &changes {
@@ -197,23 +197,21 @@ fn apply(
 
     for (name, path, text, public) in created {
         // The public half goes first, so that a failed write leaves no private key without it.
-        let public_path = path.with_extension("pub");
-        if let Some(public) = &public {
-            save(&public_path, &format!("{public}\n")).map_err(|source| GenerateError::Write {
-                path: public_path.clone(),
+        let sidecar = if let Some(public) = public {
+            let sidecar = public_path(&path);
+            save(&sidecar, &format!("{public}\n")).map_err(|source| GenerateError::Write {
+                path: sidecar.clone(),
                 source,
             })?;
-        }
+            Some(sidecar)
+        } else {
+            None
+        };
         save(&path, &text).map_err(|source| GenerateError::Write {
             path: path.clone(),
             source,
         })?;
-        print_created(
-            name,
-            public.as_ref().map(|_| public_path.as_path()),
-            root,
-            palette,
-        );
+        print_created(name, sidecar.as_deref(), root, palette);
     }
     let reencrypted_count = reencrypted.len();
     for (name, path, text) in reencrypted {
@@ -225,6 +223,12 @@ fn apply(
     }
     summarize(created_count, reencrypted_count, unset, palette);
     Ok(())
+}
+
+pub fn public_path(path: &Path) -> PathBuf {
+    let mut path = path.with_extension("");
+    path.set_extension("pub");
+    path
 }
 
 fn print_created(name: &Name, public: Option<&Path>, root: &Path, palette: Palette) {
