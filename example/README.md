@@ -56,6 +56,10 @@ The facts are encrypted, so expiry, changed generators and revoke are not checke
 `✓` marks a secret whose file exists, and `✗` a secret whose file is missing.
 The last line is on stderr, and it says that `sauce list` has no key to open the files with.
 
+If the key file is found but none of its keys can read the secrets, `sauce list` and `sauce status` report the file once.
+Use `--identity <key-file>` to pick another key.
+Set `NO_COLOR` to turn off terminal colors.
+
 Make every secret that `sauce` can make.
 
 ```sh
@@ -63,18 +67,21 @@ sauce generate
 ```
 
 ```
-created backup/ssh-key, with its public key in example/secrets/backup/ssh-key.pub
+created backup/ssh-key & backup/ssh-key.pub
 created hedgedoc/db-password
 created kanidm/idm-admin-password
 created restic/password
 created sso/hedgedoc
 created sso/miniflux
-ddclient/api-token has no file, and `sauce set ddclient/api-token` gives it one
+Set these secrets manually:
+  sauce set ddclient/api-token
+Generated: 6 created, 0 re-encrypted, 1 needs a value.
 ```
 
 Each secret is encrypted for the admin keys and for the machines that read it, so this needs no private key.
-A second run changes nothing.
-When a machine starts or stops reading a secret, the next run lists the keys that change, asks, and encrypts the secret again with the private key of an admin.
+A second run reports that no files changed.
+When a machine starts or stops reading a secret, `sauce generate` shows the exact keys that change and asks before it writes any file.
+Re-encrypting existing files needs the private key of an admin.
 
 `ddclient/api-token` comes from your DNS provider, so you paste it in at a hidden prompt.
 
@@ -99,12 +106,12 @@ sauce get ddclient/api-token
 name: ddclient/api-token
 file: example/secrets/ddclient/api-token.sauce
 note: API token for the DNS zone example.com, made in the dashboard of the DNS provider.
-reader: admin age1kv6aj53yzlf5wyu32qnv39wh68apzgkqpv49c0g0zvh5fzpjqcyscym83z
-reader: notes age1jlamuy0qf6z0mgnw0epd8j9p678gdr8ca45nnsmvrslffujcwg9s05xze5
-The facts are encrypted, and no private key of an admin is set, in --identity, SAUCE_IDENTITY, SOPS_AGE_KEY_FILE or ~/.config/sops/age/keys.txt.
+machines: notes
+readers: admin, notes
+
+Facts are locked. Run `sauce get ddclient/api-token --identity <admin-key-file>`.
 ```
 
-The last line names the four places, in order, where `sauce` looks for the private key of an admin.
 Give it the throwaway admin key of this example.
 
 ```sh
@@ -116,12 +123,15 @@ sauce get ddclient/api-token
 name: ddclient/api-token
 file: example/secrets/ddclient/api-token.sauce
 note: API token for the DNS zone example.com, made in the dashboard of the DNS provider.
-reader: admin age1kv6aj53yzlf5wyu32qnv39wh68apzgkqpv49c0g0zvh5fzpjqcyscym83z
-reader: notes age1jlamuy0qf6z0mgnw0epd8j9p678gdr8ca45nnsmvrslffujcwg9s05xze5
+machines: notes
+readers: admin, notes
 version: 1
 set: 2026-11-18
 expires: 2027-05-15
 made by: sauce set
+
+To use the value: sauce get ddclient/api-token --copy
+To edit it: sauce edit ddclient/api-token
 ```
 
 `sauce get ddclient/api-token --print` writes the value to stdout and nothing else, so it works in a pipe.
@@ -154,6 +164,7 @@ Nothing needs attention.
 ```
 
 It lists a secret with no file, a file that no machine declares, and a file whose readers differ from the declaration.
+If you supply the value for a secret and it has no file, `sauce status` shows `unset`.
 With the key of an admin it also lists a secret that expires in the next 30 days, a secret marked `revoke`, and a secret whose generator changed.
 
 Find a secret by a part of its name.
@@ -214,9 +225,20 @@ sauce edit ddclient/api-token
 edited ddclient/api-token, version 2
 ```
 
+To edit secrets matching a pattern, quote it so the shell does not expand `*`.
+
+```sh
+sauce edit 'sso/*'
+```
+
+`sauce edit` lists the names and asks before opening each value.
+Answer `y` to open one, press Enter to skip it, or enter `q` to stop without opening any more values.
+Edits you already saved still apply.
+
 `sauce edit` writes the value to a file with mode 0600, in a folder of its own in `$XDG_RUNTIME_DIR`, and removes the folder when the editor closes.
 It refuses to start when that folder is not in memory.
-Turn off any editor setting that keeps backups or undo history in another folder.
+Use an editor that does not persist value contents or print them outside its editor view.
+Turn off swap, backup, and undo files that the editor may keep outside the runtime folder.
 
 Copy a value to paste it somewhere.
 

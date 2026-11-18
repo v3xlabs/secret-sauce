@@ -7,6 +7,7 @@ use std::{
 use sauce::format::{self, Date, Facts, Name, Reader};
 
 use crate::{
+    color::{Color, Palette},
     identity::{Admin, IdentityError, OpenError},
     make::{Recipe, RecipeError, SET_BOUND},
     manifest::{Machines, RuleError, Secret},
@@ -54,9 +55,7 @@ pub enum GenerateError {
     },
     #[error("cannot ask on the terminal: {0}")]
     Prompt(#[source] io::Error),
-    #[error(
-        "some secrets have other readers than the machines declare, and sauce re-encrypts them only after a yes on a terminal"
-    )]
+    #[error("reader changes not approved; no files changed")]
     NotConfirmed,
     #[error(transparent)]
     Identity(#[from] IdentityError),
@@ -121,6 +120,26 @@ pub fn generate(
         }
     }
 
+    if !changes.is_empty() && !confirm(&changes, created.len()).map_err(GenerateError::Prompt)? {
+        return Err(GenerateError::NotConfirmed);
+    }
+    let mut reencrypted = Vec::with_capacity(changes.len());
+    if !changes.is_empty() {
+        let admin = Admin::find(identity)?;
+        for change in changes {
+            let (value, mut facts) = admin.open(&change.text, change.name)?;
+            facts.revoke |= !change.lost.is_empty();
+            let text = format::write(change.name, &value, &facts, change.bound, change.readers)
+                .map_err(|source| GenerateError::Encrypt {
+                    name: change.name.clone(),
+                    source: Box::new(source),
+                })?;
+            reencrypted.push((change.name, change.path, text));
+        }
+    }
+
+    let palette = Palette::stdout();
+    let created_count = created.len();
     for (name, path, text, public) in created {
         // The public half goes first, so that a failed write leaves no private key without it.
         let public_path = path.with_extension("pub");
@@ -134,47 +153,76 @@ pub fn generate(
             path: path.clone(),
             source,
         })?;
-        if public.is_some() {
-            let shown = public_path.strip_prefix(root).unwrap_or(&public_path);
-            println!("created {name}, with its public key in {}", shown.display());
-        } else {
-            println!("created {name}");
-        }
+        print_created(
+            name,
+            public.as_ref().map(|_| public_path.as_path()),
+            root,
+            palette,
+        );
     }
-    for name in unset {
-        println!("{name} has no file, and `sauce set {name}` gives it one");
-    }
-
-    if changes.is_empty() {
-        return Ok(());
-    }
-    if !confirm(&changes).map_err(GenerateError::Prompt)? {
-        return Err(GenerateError::NotConfirmed);
-    }
-    let admin = Admin::find(identity)?;
-    for change in changes {
-        let (value, mut facts) = admin.open(&change.text, change.name)?;
-        facts.revoke |= !change.lost.is_empty();
-        let text = format::write(change.name, &value, &facts, change.bound, change.readers)
-            .map_err(|source| GenerateError::Encrypt {
-                name: change.name.clone(),
-                source: Box::new(source),
-            })?;
-        save(&change.path, &text).map_err(|source| GenerateError::Write {
-            path: change.path.clone(),
+    let reencrypted_count = reencrypted.len();
+    for (name, path, text) in reencrypted {
+        save(&path, &text).map_err(|source| GenerateError::Write {
+            path: path.clone(),
             source,
         })?;
-        println!("re-encrypted {}", change.name);
+        println!("{} {name}", palette.paint(Color::Cyan, "re-encrypted"));
     }
+    summarize(created_count, reencrypted_count, &unset, palette);
     Ok(())
 }
 
+fn print_created(name: &Name, public: Option<&Path>, root: &Path, palette: Palette) {
+    let label = palette.paint(Color::Green, "created");
+    let Some(public) = public else {
+        println!("{label} {name}");
+        return;
+    };
+    let logical = Path::new(name.as_str());
+    if public.file_stem() == logical.file_name()
+        && public
+            .parent()
+            .zip(logical.parent())
+            .is_some_and(|(dir, prefix)| dir.ends_with(prefix))
+    {
+        println!("{label} {name} & {name}.pub");
+    } else {
+        let shown = public.strip_prefix(root).unwrap_or(public);
+        println!("{label} {name} & {}", shown.display());
+    }
+}
+
+fn summarize(created: usize, reencrypted: usize, unset: &[&Name], palette: Palette) {
+    if !unset.is_empty() {
+        println!(
+            "{}",
+            palette.paint(Color::Yellow, "Set these secrets manually:")
+        );
+        for name in unset {
+            println!("  sauce set {name}");
+        }
+    }
+    let unset = unset.len();
+    let needs = if unset == 1 { "needs" } else { "need" };
+    if created == 0 && reencrypted == 0 {
+        if unset == 0 {
+            println!("No files changed.");
+        } else {
+            println!("No files changed. {unset} {needs} a value.");
+        }
+    } else {
+        println!(
+            "Generated: {created} created, {reencrypted} re-encrypted, {unset} {needs} a value."
+        );
+    }
+}
+
 /// Prints every reader that changes, with every key that gets access to a value that exists, and asks on the terminal.
-fn confirm(changes: &[Change<'_>]) -> io::Result<bool> {
+fn confirm(changes: &[Change<'_>], pending: usize) -> io::Result<bool> {
     let mut stderr = io::stderr().lock();
     writeln!(
         stderr,
-        "These readers change, and a key that gets access learns a value that exists:"
+        "These readers change. A key that gets access learns a value that exists:"
     )?;
     for change in changes {
         for reader in &change.gained {
@@ -192,13 +240,23 @@ fn confirm(changes: &[Change<'_>]) -> io::Result<bool> {
             )?;
         }
     }
-    if !io::stdin().is_terminal() {
+    if !(io::stdin().is_terminal() && stderr.is_terminal()) {
         return Ok(false);
     }
-    write!(
-        stderr,
-        "Encrypt these secrets again with the key of an admin? [y/N] "
-    )?;
+    match pending {
+        0 => write!(
+            stderr,
+            "Encrypt these secrets again with the key of an admin? [y/N] "
+        )?,
+        1 => write!(
+            stderr,
+            "Apply reader changes and create 1 missing file? [y/N] "
+        )?,
+        count => write!(
+            stderr,
+            "Apply reader changes and create {count} missing files? [y/N] "
+        )?,
+    }
     stderr.flush()?;
     let mut answer = String::new();
     io::stdin().lock().read_line(&mut answer)?;

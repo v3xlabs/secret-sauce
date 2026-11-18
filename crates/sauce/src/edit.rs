@@ -1,8 +1,8 @@
 use std::{
     env,
-    ffi::OsString,
+    ffi::{OsStr, OsString},
     fs::{self, DirBuilder, OpenOptions},
-    io::{self, Write as _},
+    io::{self, BufRead as _, IsTerminal as _, Write as _},
     os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _},
     path::{Path, PathBuf},
     process::{self, Command, ExitStatus, Stdio},
@@ -14,7 +14,8 @@ use crate::{
     generate,
     identity::{Admin, IdentityError, OpenError},
     make::{Recipe, RecipeError, SET_BOUND},
-    manifest::{Machines, RuleError},
+    manifest::{Machines, RuleError, Secret},
+    rotate::matches,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -23,8 +24,10 @@ pub enum EditError {
     Name(#[from] NameError),
     #[error(transparent)]
     Rule(#[from] RuleError),
-    #[error("no machine declares secret {0}")]
+    #[error("no machine declares secret {0}; run `sauce search` to find its name")]
     NotDeclared(Name),
+    #[error("no declared secret matches {0}")]
+    NoMatch(String),
     #[error("{0} is a key pair, and `sauce rotate {0}` makes a new one with its public key")]
     KeyPair(Name),
     #[error("secret {name}: {source}")]
@@ -41,6 +44,14 @@ pub enum EditError {
         #[source]
         source: io::Error,
     },
+    #[error("{} is not a .sauce file: {source}", path.display())]
+    Parse {
+        path: PathBuf,
+        #[source]
+        source: format::ParseError,
+    },
+    #[error("readers of {0} differ from the declaration; run `sauce generate` before editing")]
+    Readers(Name),
     #[error("EDITOR is not set, and sauce edit opens the value in it")]
     NoEditor,
     #[error(
@@ -49,6 +60,12 @@ pub enum EditError {
     NoRuntimeDir,
     #[error("{} is not in memory, and sauce edit keeps the value only in a tmpfs folder", .0.display())]
     NotInMemory(PathBuf),
+    #[error(
+        "pattern {0:?} needs a terminal to confirm each secret; name one secret to edit without a prompt"
+    )]
+    NotInteractive(String),
+    #[error("cannot ask: {0}")]
+    Prompt(#[source] io::Error),
     #[error("{0} changed while the editor was open, and nothing was written")]
     Changed(Name),
     #[error("{0} is at the last version that a file can count")]
@@ -89,29 +106,172 @@ impl Drop for Folder {
     }
 }
 
-/// Opens the value of one secret in `$EDITOR`, in a file with mode 0600 in a folder of its own in `$XDG_RUNTIME_DIR`, and writes it back when it changed.
+struct Session {
+    editor: OsString,
+    runtime: PathBuf,
+    admin: Admin,
+}
+
+enum Answer {
+    Yes,
+    No,
+    Quit,
+}
+
+/// Exact names open one value; patterns need a separate confirmation for each value.
 pub fn edit(
     machines: &Machines,
     root: &Path,
-    name: &str,
+    pattern: &str,
     identity: Option<&Path>,
 ) -> Result<(), EditError> {
-    let name = name.parse::<Name>()?;
+    if pattern.contains('*') {
+        return edit_matching(machines, root, pattern, identity);
+    }
+    let name = pattern.parse::<Name>()?;
     let secrets = machines.secrets()?;
-    let secret = secrets
-        .get(&name)
+    let (name, secret) = secrets
+        .get_key_value(&name)
         .ok_or_else(|| EditError::NotDeclared(name.clone()))?;
-    let bound = match Recipe::new(secret.definition) {
-        Ok(Some(Recipe::Ed25519)) => return Err(EditError::KeyPair(name)),
-        Ok(recipe) => recipe.map_or(SET_BOUND, |recipe| recipe.bound()),
-        Err(source) => return Err(EditError::Recipe { name, source }),
+    let bound = bound(name, secret)?;
+    let (editor, runtime) = environment()?;
+    let (path, text) = load(name, secret, root)?;
+    let admin = Admin::find(identity)?;
+    let session = Session {
+        editor,
+        runtime,
+        admin,
     };
+    edit_one(name, secret, bound, &path, &text, &session)
+}
+
+fn edit_matching(
+    machines: &Machines,
+    root: &Path,
+    pattern: &str,
+    identity: Option<&Path>,
+) -> Result<(), EditError> {
+    let secrets = machines.secrets()?;
+    if !(io::stdin().is_terminal() && io::stderr().is_terminal()) {
+        return Err(EditError::NotInteractive(pattern.to_owned()));
+    }
+    let matched: Vec<_> = secrets
+        .iter()
+        .filter(|(name, _)| matches(pattern, name.as_str()))
+        .collect();
+    if matched.is_empty() {
+        return Err(EditError::NoMatch(pattern.to_owned()));
+    }
+    let (editor, runtime) = environment()?;
+    let session = Session {
+        editor,
+        runtime,
+        admin: Admin::find(identity)?,
+    };
+
+    let mut stderr = io::stderr();
+    let mut eligible = Vec::new();
+    for (name, secret) in matched {
+        let skip = match bound(name, secret) {
+            Ok(bound) => match load(name, secret, root) {
+                Ok(_) => {
+                    eligible.push((name, secret, bound));
+                    continue;
+                }
+                Err(EditError::Missing(_)) => {
+                    format!("it has no file, and `sauce set {name}` or `sauce generate` makes it")
+                }
+                Err(error) => return Err(error),
+            },
+            Err(EditError::KeyPair(_)) => format!(
+                "it is a key pair, and `sauce rotate {name}` makes a new one with its public key"
+            ),
+            Err(error) => return Err(error),
+        };
+        writeln!(stderr, "skipped {name}, because {skip}").map_err(EditError::Prompt)?;
+    }
+    if eligible.is_empty() {
+        writeln!(stderr, "no secret that matches {pattern} can be edited")
+            .map_err(EditError::Prompt)?;
+        return Ok(());
+    }
+
+    writeln!(
+        stderr,
+        "{} secrets match. The editor shows only the value you choose.",
+        eligible.len()
+    )
+    .map_err(EditError::Prompt)?;
+    for (name, ..) in &eligible {
+        writeln!(stderr, "  {name}").map_err(EditError::Prompt)?;
+    }
+    for (index, &(name, secret, bound)) in eligible.iter().enumerate() {
+        match ask(name).map_err(EditError::Prompt)? {
+            Answer::Yes => {
+                let (path, text) = load(name, secret, root)?;
+                edit_one(name, secret, bound, &path, &text, &session)?;
+            }
+            Answer::No => {
+                writeln!(stderr, "skipped {name}").map_err(EditError::Prompt)?;
+            }
+            Answer::Quit => {
+                writeln!(stderr, "Stopped. These values were not opened:")
+                    .map_err(EditError::Prompt)?;
+                for (name, ..) in &eligible[index..] {
+                    writeln!(stderr, "  {name}").map_err(EditError::Prompt)?;
+                }
+                return Ok(());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn ask(name: &Name) -> io::Result<Answer> {
+    let mut stderr = io::stderr();
+    write!(stderr, "Open {name} in $EDITOR? [y/N/q] ")?;
+    stderr.flush()?;
+    let mut answer = String::new();
+    if io::stdin().lock().read_line(&mut answer)? == 0 {
+        // The terminal does not echo the end of input, so the next line would start after the prompt.
+        writeln!(stderr)?;
+        return Ok(Answer::Quit);
+    }
+    Ok(match answer.trim() {
+        "y" => Answer::Yes,
+        "q" => Answer::Quit,
+        _ => Answer::No,
+    })
+}
+
+/// The longest value that the declaration of the secret allows, unless the secret is a key pair, which `sauce rotate` makes.
+fn bound(name: &Name, secret: &Secret<'_>) -> Result<usize, EditError> {
+    match Recipe::new(secret.definition) {
+        Ok(Some(Recipe::Ed25519)) => Err(EditError::KeyPair(name.clone())),
+        Ok(recipe) => Ok(recipe.map_or(SET_BOUND, |recipe| recipe.bound())),
+        Err(source) => Err(EditError::Recipe {
+            name: name.clone(),
+            source,
+        }),
+    }
+}
+
+fn environment() -> Result<(OsString, PathBuf), EditError> {
     let editor = env::var_os("EDITOR")
         .filter(|editor| !editor.is_empty())
         .ok_or(EditError::NoEditor)?;
     let runtime = env::var_os("XDG_RUNTIME_DIR")
         .filter(|folder| !folder.is_empty())
         .ok_or(EditError::NoRuntimeDir)?;
+    let runtime = PathBuf::from(runtime);
+    if !memory_backed(&runtime) {
+        return Err(EditError::NotInMemory(runtime));
+    }
+    Ok((editor, runtime))
+}
+
+/// Reads the file of a secret, and refuses it when its readers are not the declared ones, so that an edit never changes who can read the value.
+fn load(name: &Name, secret: &Secret<'_>, root: &Path) -> Result<(PathBuf, String), EditError> {
     let path = root.join(&secret.definition.file);
     let text = format::load(&path).map_err(|source| {
         if source.kind() == io::ErrorKind::NotFound {
@@ -123,9 +283,29 @@ pub fn edit(
             }
         }
     })?;
-    let (old, facts) = Admin::find(identity)?.open(&text, &name)?;
+    let (_, readers) = format::look(&text).map_err(|source| EditError::Parse {
+        path: path.clone(),
+        source,
+    })?;
+    let declared = readers.iter().all(|reader| secret.readers.contains(reader))
+        && secret.readers.iter().all(|reader| readers.contains(reader));
+    if !declared {
+        return Err(EditError::Readers(name.clone()));
+    }
+    Ok((path, text))
+}
 
-    let mut new = in_editor(editor, PathBuf::from(runtime), &name, &old)?;
+fn edit_one(
+    name: &Name,
+    secret: &Secret<'_>,
+    bound: usize,
+    path: &Path,
+    text: &str,
+    session: &Session,
+) -> Result<(), EditError> {
+    let (old, facts) = session.admin.open(text, name)?;
+
+    let mut new = in_editor(&session.editor, &session.runtime, name, &old)?;
     // Editors end the last line with a newline, which is not part of a value that had none.
     if !old.expose().ends_with(b"\n") && new.ends_with(b"\n") {
         new.pop();
@@ -139,8 +319,8 @@ pub fn edit(
         return Err(EditError::Empty);
     }
 
-    if format::load(&path).ok().as_deref() != Some(text.as_str()) {
-        return Err(EditError::Changed(name));
+    if format::load(path).ok().as_deref() != Some(text) {
+        return Err(EditError::Changed(name.clone()));
     }
     let facts = Facts {
         version: facts
@@ -152,9 +332,9 @@ pub fn edit(
         revoke: false,
         ..facts
     };
-    let text = format::write(&name, &new, &facts, bound, &secret.readers)?;
-    generate::save(&path, &text).map_err(|source| EditError::Write {
-        path: path.clone(),
+    let text = format::write(name, &new, &facts, bound, &secret.readers)?;
+    generate::save(path, &text).map_err(|source| EditError::Write {
+        path: path.to_owned(),
         source,
     })?;
     println!("edited {name}, version {}", facts.version);
@@ -163,15 +343,15 @@ pub fn edit(
 
 /// Writes the value to a buffer in a folder of its own in `runtime`, opens it in `editor`, and gives what the editor saved.
 fn in_editor(
-    editor: OsString,
-    runtime: PathBuf,
+    editor: &OsStr,
+    runtime: &Path,
     name: &Name,
     old: &Value,
 ) -> Result<Vec<u8>, EditError> {
-    if !memory_backed(&runtime) {
-        return Err(EditError::NotInMemory(runtime));
+    if !memory_backed(runtime) {
+        return Err(EditError::NotInMemory(runtime.to_owned()));
     }
-    // The editor keeps its swap and backup files next to the buffer, so a folder of its own holds them all.
+    // Backups next to the buffer stay in memory and are removed with it.
     let folder = runtime.join(format!("sauce-edit-{}", process::id()));
     let folder_error = |source| EditError::Buffer {
         path: folder.clone(),

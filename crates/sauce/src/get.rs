@@ -17,10 +17,14 @@ pub enum GetError {
     Name(#[from] NameError),
     #[error(transparent)]
     Rule(#[from] RuleError),
-    #[error("no machine declares secret {0}")]
+    #[error("no machine declares secret {0}; run `sauce search` to find its name")]
     NotDeclared(Name),
     #[error("secret {0} is not in the partial manifest and may be on a failed machine")]
     NotInPartial(Name),
+    #[error("{0} has no file yet; run `sauce set {0}`")]
+    MissingManual(Name),
+    #[error("{0} has no file yet; run `sauce generate`")]
+    MissingGenerated(Name),
     #[error("cannot read {}: {source}", path.display())]
     Read {
         path: PathBuf,
@@ -32,6 +36,12 @@ pub enum GetError {
         path: PathBuf,
         #[source]
         source: format::ParseError,
+    },
+    #[error("{} holds {found}, not {name}", path.display())]
+    OtherName {
+        path: PathBuf,
+        found: Name,
+        name: Name,
     },
     #[error("cannot print: {0}")]
     Print(#[from] io::Error),
@@ -65,66 +75,83 @@ pub fn get(
 ) -> Result<(), GetError> {
     let name = name.parse::<Name>()?;
     let secrets = machines.secrets()?;
-    let secret = secrets.get(&name).ok_or_else(|| {
+    let Some(secret) = secrets.get(&name) else {
         if machines.failures().is_some() {
-            GetError::NotInPartial(name.clone())
-        } else {
-            GetError::NotDeclared(name.clone())
+            return Err(GetError::NotInPartial(name));
         }
-    })?;
+        return Err(GetError::NotDeclared(name));
+    };
     let path = root.join(&secret.definition.file);
-    let text = format::load(&path).map_err(|source| GetError::Read {
-        path: path.clone(),
-        source,
-    })?;
+    let text = match format::load(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            let error = match (&secret.definition.generator, &secret.definition.once) {
+                (None, None) => GetError::MissingManual(name),
+                _ => GetError::MissingGenerated(name),
+            };
+            return Err(error);
+        }
+        Err(source) => return Err(GetError::Read { path, source }),
+    };
 
-    match out {
-        Out::Facts => {}
-        Out::Print => {
-            let (value, _) = Admin::find(identity)?.open(&text, &name)?;
+    if !matches!(out, Out::Facts) {
+        let (value, _) = Admin::find(identity)?.open(&text, &name)?;
+        if matches!(out, Out::Print) {
             return Ok(io::stdout().write_all(value.expose())?);
         }
-        Out::Copy => {
-            let (value, _) = Admin::find(identity)?.open(&text, &name)?;
-            clipboard::copy(&value)?;
-            eprintln!(
-                "Copied {name} to the clipboard for {} seconds. A clipboard history of the desktop keeps a copy of its own.",
-                clipboard::CLEAR_SECONDS
-            );
-            return Ok(());
-        }
+        clipboard::copy(&value)?;
+        eprintln!(
+            "Copied {name} to the clipboard for {} seconds. A clipboard history of the desktop keeps a copy of its own.",
+            clipboard::CLEAR_SECONDS
+        );
+        return Ok(());
     }
 
-    let (_, readers) = format::look(&text).map_err(|source| GetError::Parse {
+    let (found, readers) = format::look(&text).map_err(|source| GetError::Parse {
         path: path.clone(),
         source,
     })?;
+    if found != name {
+        return Err(GetError::OtherName { path, found, name });
+    }
     let mut out = io::stdout().lock();
     writeln!(out, "name: {name}")?;
     writeln!(out, "file: {}", secret.definition.file.display())?;
     if let Some(note) = &secret.definition.note {
         writeln!(out, "note: {note}")?;
     }
-    for reader in &readers {
-        writeln!(out, "reader: {} {}", reader.r#for, reader.age)?;
+    writeln!(out, "machines: {}", secret.machines.join(", "))?;
+    write!(out, "readers: ")?;
+    for (index, reader) in readers.iter().enumerate() {
+        let separator = if index == 0 { "" } else { ", " };
+        write!(out, "{separator}{}", reader.r#for)?;
+    }
+    writeln!(out)?;
+    if machines.failures().is_none()
+        && (readers.len() != secret.readers.len()
+            || !readers.iter().all(|reader| secret.readers.contains(reader))
+            || !secret.readers.iter().all(|reader| readers.contains(reader)))
+    {
+        writeln!(
+            out,
+            "readers differ from the declaration; run `sauce generate` to review the changes"
+        )?;
     }
 
-    let admin = match Admin::find(identity) {
-        Ok(admin) => admin,
-        Err(IdentityError::Missing) => {
-            eprintln!("The facts are encrypted, and {}.", IdentityError::Missing);
-            return Ok(());
-        }
-        Err(error) => return Err(error.into()),
+    let Some(admin) = Admin::find_if_set(identity)? else {
+        writeln!(
+            out,
+            "\nFacts are locked. Run `sauce get {name} --identity <admin-key-file>`."
+        )?;
+        return Ok(());
     };
     let facts = admin.open_facts(&text, &name)?;
     writeln!(out, "version: {}", facts.version)?;
     writeln!(out, "set: {}", facts.set)?;
-    if let Some(date) = facts.issued {
-        writeln!(out, "issued: {date}")?;
-    }
-    if let Some(date) = facts.expires {
-        writeln!(out, "expires: {date}")?;
+    for (label, date) in [("issued", facts.issued), ("expires", facts.expires)] {
+        if let Some(date) = date {
+            writeln!(out, "{label}: {date}")?;
+        }
     }
     let made_by = match facts.generator {
         None => String::from("sauce set"),
@@ -139,6 +166,13 @@ pub fn get(
     }
     if facts.revoke {
         writeln!(out, "revoke: a former reader knows this value")?;
+    }
+    writeln!(out, "\nTo use the value: sauce get {name} --copy")?;
+    let generator = secret.definition.generator.as_ref();
+    if generator.is_some_and(|generator| generator.keypair.is_some()) {
+        writeln!(out, "To replace it: sauce rotate {name}")?;
+    } else {
+        writeln!(out, "To edit it: sauce edit {name}")?;
     }
     Ok(())
 }

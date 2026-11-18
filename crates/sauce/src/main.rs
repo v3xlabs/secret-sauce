@@ -1,4 +1,5 @@
 mod clipboard;
+mod color;
 mod edit;
 mod generate;
 mod get;
@@ -24,11 +25,12 @@ use clap::{Args, Parser, Subcommand};
 use sauce::format::{self, Date};
 
 use crate::{
+    color::{Color, Palette},
     get::Out,
     identity::Admin,
     manifest::{Machines, ReadError, ReadManifests},
     set::Dates,
-    status::StatusError,
+    status::{Evaluator, StatusError},
 };
 
 const HEADER: [&str; 4] = ["SECRET", "MACHINES", "MADE BY", "STATE"];
@@ -87,9 +89,10 @@ enum Command {
         #[command(flatten)]
         identity: Identity,
     },
-    /// Open the value of one secret in $EDITOR, and write it back when it changed.
+    /// Open a secret in $EDITOR. Confirm each secret when using a pattern.
     Edit {
-        name: String,
+        /// A name, or a quoted pattern where `*` stands for any text, such as 'sso/*'.
+        pattern: String,
         #[command(flatten)]
         source: Source,
         #[command(flatten)]
@@ -102,8 +105,9 @@ enum Command {
         #[command(flatten)]
         source: Source,
     },
-    /// Show the readers of a secret, and its facts with the private key of an admin.
+    /// Show facts about one secret. Use --copy or --print to request the value.
     Get {
+        /// The exact name of the secret.
         name: String,
         /// Write the value to stdout, and nothing else.
         #[arg(long, conflicts_with = "copy")]
@@ -162,6 +166,13 @@ impl Source {
     }
 }
 
+enum Mark {
+    Present,
+    Missing,
+    Warning,
+    NoReader,
+}
+
 fn list(
     machines: &ReadManifests,
     root: &Path,
@@ -169,52 +180,70 @@ fn list(
 ) -> Result<(), Box<dyn Error>> {
     let secrets = machines.secrets()?;
     let admin = Admin::find_if_set(identity)?;
-    let partial = machines.failures().is_some();
-    let today = Date::today();
-    let mut rows = vec![HEADER.map(String::from)];
+    let mut evaluator = Evaluator::new(admin.as_ref(), machines.failures().is_some());
+    let mut rows = Vec::new();
     for (name, secret) in &secrets {
         let path = root.join(&secret.definition.file);
-        let sign = match &admin {
-            None if path.exists() => "✓",
-            None => "✗",
-            Some(admin) => match format::load(&path) {
-                Ok(text)
-                    if status::problems(name, &text, secret, Some(admin), today, partial)
-                        .is_empty() =>
-                {
-                    "✓"
+        let mark = match &admin {
+            None if path.exists() => Mark::Present,
+            None => Mark::Missing,
+            Some(_) => match format::load(&path) {
+                Ok(text) => {
+                    let findings = evaluator.check(name, &text, secret);
+                    if !findings.problems.is_empty() {
+                        Mark::Warning
+                    } else if findings.no_reader {
+                        Mark::NoReader
+                    } else {
+                        Mark::Present
+                    }
                 }
-                Ok(_) => "⚠",
-                Err(error) if error.kind() == io::ErrorKind::NotFound => "✗",
+                Err(error) if error.kind() == io::ErrorKind::NotFound => Mark::Missing,
                 Err(source) => return Err(StatusError::Read { path, source }.into()),
             },
         };
-        rows.push([
-            name.to_string(),
-            secret.machines.join(","),
-            secret.definition.made_by(),
-            sign.to_owned(),
-        ]);
+        rows.push((
+            [
+                name.to_string(),
+                secret.machines.join(","),
+                secret.definition.made_by(),
+            ],
+            mark,
+        ));
     }
 
     let mut widths = [0; 3];
-    for row in &rows {
-        for (width, cell) in widths.iter_mut().zip(row) {
+    for (width, cell) in widths.iter_mut().zip(HEADER) {
+        *width = cell.len();
+    }
+    for (cells, _) in &rows {
+        for (width, cell) in widths.iter_mut().zip(cells) {
             *width = (*width).max(cell.len());
         }
     }
+    let palette = Palette::stdout();
     let mut text = String::new();
-    for [name, machines, made_by, file] in &rows {
-        let [name_width, machines_width, made_by_width] = widths;
+    let [name_width, machines_width, made_by_width] = widths;
+    let [name, machines, made_by, state] = HEADER;
+    writeln!(
+        text,
+        "{name:name_width$}  {machines:machines_width$}  {made_by:made_by_width$}  {state}"
+    )?;
+    for ([name, machines, made_by], mark) in &rows {
+        let (sign, color) = match mark {
+            Mark::Present => ("✓", Color::Green),
+            Mark::NoReader if evaluator.all_inaccessible() => ("✓", Color::Green),
+            Mark::Warning | Mark::NoReader => ("⚠", Color::Yellow),
+            Mark::Missing => ("✗", Color::Red),
+        };
         writeln!(
             text,
-            "{name:name_width$}  {machines:machines_width$}  {made_by:made_by_width$}  {file}"
+            "{name:name_width$}  {machines:machines_width$}  {made_by:made_by_width$}  {}",
+            palette.paint(color, sign)
         )?;
     }
     io::stdout().write_all(text.as_bytes())?;
-    if admin.is_none() {
-        status::warn_unchecked();
-    }
+    evaluator.finish();
     Ok(())
 }
 
@@ -287,7 +316,7 @@ fn run(command: Command) -> Result<ExitCode, Box<dyn Error>> {
             });
         }
         Command::Edit {
-            name,
+            pattern,
             source,
             identity,
         } => {
@@ -295,7 +324,7 @@ fn run(command: Command) -> Result<ExitCode, Box<dyn Error>> {
             Ok(edit::edit(
                 &machines,
                 &root,
-                &name,
+                &pattern,
                 identity.file.as_deref(),
             )?)
         }

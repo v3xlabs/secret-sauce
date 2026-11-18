@@ -338,7 +338,6 @@
                   exit 1
                 fi
 
-                sauce status $flags | grep -E '^ddclient/api-token +has no file'
                 lastyear=$(( $(date +%Y) - 1 ))-06-01
                 printf token | sauce set ddclient/api-token --expires $lastyear $flags
                 sauce status $flags | grep -E "^ddclient/api-token +expired on $lastyear"

@@ -204,7 +204,7 @@ fn confirm(rotations: &[Rotation<'_>]) -> io::Result<bool> {
 }
 
 /// Whether `name` matches `pattern`, where `*` stands for any text, `/` included.
-fn matches(pattern: &str, name: &str) -> bool {
+pub fn matches(pattern: &str, name: &str) -> bool {
     let mut parts = pattern.split('*');
     let first = parts.next().unwrap_or_default();
     let Some(mut rest) = name.strip_prefix(first) else {
