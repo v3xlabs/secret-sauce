@@ -365,6 +365,178 @@
                 [[ -z $copied ]]
                 touch $out
               '';
+          import =
+            pkgs.runCommand "sauce-import"
+              {
+                nativeBuildInputs = [
+                  self.packages.${pkgs.stdenv.hostPlatform.system}.sauce
+                  pkgs.age
+                  pkgs.sops
+                ];
+              }
+              ''
+                export HOME="$TMPDIR/home"
+                mkdir -p "$HOME"
+                mkdir checkout
+                cp -r ${self}/example checkout/
+                chmod -R u+w checkout
+                cd checkout
+                flags="--manifest ${manifests}"
+                admin=example/snakeoil/admin.key
+
+                # A throwaway sops key and file, made here so that no vector is committed.
+                age-keygen -o "$TMPDIR/sops.key" 2> /dev/null
+                export SOPS_AGE_KEY_FILE="$TMPDIR/sops.key"
+                password=Kq1vT0bWx9Lm4tYcR8zPa2Nd6Hf3Js7Ge5Ub0Wo1Xy
+                printf 'ddclient_token: |\n  line one\n  line two\nhedgedoc_db: %s\nport: 8080\nunused: other-value\n' "$password" > plain.yaml
+                sops encrypt --age "$(age-keygen -y "$SOPS_AGE_KEY_FILE")" --input-type yaml --output-type yaml plain.yaml > secrets.sops.yaml
+                rm plain.yaml
+                printf '{\n  "ddclient_token": "ddclient/api-token",\n  "hedgedoc_db": "hedgedoc/db-password"\n}\n' > import.json
+
+                # Fails the check when the output of sauce holds any value of the sops file.
+                leaks() {
+                  if grep -q -e "$password" -e 'line one' -e other-value -e changed "$1"; then
+                    echo "a value of the sops file reached the output of sauce" >&2
+                    exit 1
+                  fi
+                }
+                sums() { find example -name '*.sauce.yaml' | sort | xargs -r sha256sum; }
+
+                sauce import secrets.sops.yaml import.json --dry-run $flags > out 2>&1
+                leaks out
+                cat out
+                grep -x 'import "ddclient_token" as ddclient/api-token' out
+                grep -x 'import "hedgedoc_db" as hedgedoc/db-password' out
+                [[ -z $(sums) ]]
+
+                # A secret that sauce cannot stage stops the import before any secret is in place.
+                mkdir -p example/secrets/hedgedoc
+                chmod 555 example/secrets/hedgedoc
+                if sauce import secrets.sops.yaml import.json $flags > out 2>&1; then
+                  exit 1
+                fi
+                leaks out
+                cat out
+                [[ -z $(sums) ]]
+                chmod 755 example/secrets/hedgedoc
+
+                # A symbolic link at the name that sauce once staged at, and its target, stay as they are.
+                mkdir -p example/secrets/ddclient
+                echo untouched > "$TMPDIR/target"
+                ln -s "$TMPDIR/target" example/secrets/ddclient/api-token.sauce.yaml.new
+                sauce import secrets.sops.yaml import.json $flags > out 2>&1
+                leaks out
+                cat out
+                [[ $(cat "$TMPDIR/target") == untouched ]]
+                [[ -L example/secrets/ddclient/api-token.sauce.yaml.new && ! -L example/secrets/ddclient/api-token.sauce.yaml ]]
+                printf 'line one\nline two\n' > expected
+                sauce get ddclient/api-token --print $flags --identity $admin > actual
+                cmp expected actual
+                [[ $(sauce get hedgedoc/db-password --print $flags --identity $admin) == "$password" ]]
+                sums > before
+
+                # New values for the same keys change no file that exists.
+                printf 'ddclient_token: changed\nhedgedoc_db: changed\n' > plain.yaml
+                sops encrypt --age "$(age-keygen -y "$SOPS_AGE_KEY_FILE")" --input-type yaml --output-type yaml plain.yaml > changed.sops.yaml
+                rm plain.yaml
+                sauce import changed.sops.yaml import.json $flags > out 2>&1
+                leaks out
+                grep -x 'skip "ddclient_token": ddclient/api-token has a .sauce.yaml file, which sauce keeps, and sauce did not compare the values' out
+                grep -x 'skip "hedgedoc_db": hedgedoc/db-password has a .sauce.yaml file, which sauce keeps, and sauce did not compare the values' out
+                sums | diff before -
+
+                # A folder in the place of a .sauce.yaml file is refused, and not skipped.
+                mkdir -p example/secrets/sso/hedgedoc.sauce.yaml
+                printf '{ "unused": "sso/hedgedoc" }\n' > folder.json
+                if sauce import secrets.sops.yaml folder.json $flags > out 2>&1; then
+                  exit 1
+                fi
+                leaks out
+                cat out
+                grep -x 'refuse "unused": .*/example/secrets/sso/hedgedoc.sauce.yaml is not a file' out
+                rmdir example/secrets/sso/hedgedoc.sauce.yaml
+
+                # A folder that is a symbolic link stops the import, in a dry run too, and nothing lands where it points.
+                rmdir example/secrets/sso
+                mkdir "$TMPDIR/elsewhere"
+                ln -s "$TMPDIR/elsewhere" example/secrets/sso
+                for dry in --dry-run ""; do
+                  if sauce import secrets.sops.yaml folder.json $dry $flags > out 2>&1; then
+                    exit 1
+                  fi
+                  leaks out
+                  cat out
+                  grep -x 'refuse "unused": the folder .*/example/secrets/sso of sso/hedgedoc is a symbolic link' out
+                done
+                [[ -z $(ls -A "$TMPDIR/elsewhere") ]]
+                rm example/secrets/sso
+
+                # A mapping file over 1 MiB stops the import, even when its content is fine.
+                { printf '{ "unused": "sso/hedgedoc"'; head -c 1048576 /dev/zero | tr '\0' ' '; printf '}\n'; } > large.json
+                if sauce import secrets.sops.yaml large.json --dry-run $flags > out 2>&1; then
+                  exit 1
+                fi
+                leaks out
+                cat out
+                grep -x 'error: the mapping file large.json is larger than 1048576 bytes' out
+
+                # A credential in a target field can be lowercase hex, which is a valid name, so only a declared target is printed.
+                hex=4f2a9c0d7e1b6a35c8f04e92d17b3a6c
+                printf '{\n  "port": "kanidm/idm-admin-password",\n  "missing": "sso/hedgedoc",\n  "unused": "sso/miniflux",\n  "hedgedoc_db": "sso/miniflux",\n  "unused": "kanidm/idm-admin-password",\n  "ddclient_token": "Bad Name",\n  "absent": "Bad Name",\n  "stray": "%s",\n  "stray_again": "%s",\n  "clear\\u001b[2J\\nimport hedgedoc_db as sso/hedgedoc": "restic/password"\n}\n' "$hex" "$hex" > bad.json
+                if sauce import secrets.sops.yaml bad.json $flags > out 2>&1; then
+                  exit 1
+                fi
+                leaks out
+                cat out
+                grep -x 'refuse "port": the value is not a string at the top level of the sops file' out
+                grep -x 'refuse "missing": the sops file has no such key' out
+                grep -x 'refuse "hedgedoc_db": an earlier sops key also maps to sso/miniflux' out
+                grep -x 'refuse "unused": the mapping names this sops key twice' out
+                grep -x 'refuse "ddclient_token": no machine declares the target' out
+                grep -x 'refuse "absent": no machine declares the target' out
+                grep -x 'refuse "stray": no machine declares the target' out
+                grep -x 'refuse "stray_again": no machine declares the target' out
+                # A sops key with control characters stays on one line, and sends no escape sequence to the terminal.
+                grep -xF 'refuse "clear\u{1b}[2J\nimport hedgedoc_db as sso/hedgedoc": the sops file has no such key' out
+                if grep -q $'\e' out; then
+                  exit 1
+                fi
+                if grep -q -e 'Bad Name' -e "$hex" out; then
+                  exit 1
+                fi
+                sums | diff before -
+
+                # Each duplicate refusal names only its own key, so a long first key appears once and not once for each duplicate.
+                long=$(head -c 100000 /dev/zero | tr '\0' a)
+                { printf '{ "%s": "sso/hedgedoc"' "$long"; for i in $(seq 20); do printf ', "k%s": "sso/hedgedoc"' "$i"; done; printf ' }\n'; } > many.json
+                if sauce import secrets.sops.yaml many.json $flags > out 2>&1; then
+                  exit 1
+                fi
+                leaks out
+                grep -x 'refuse "k20": an earlier sops key also maps to sso/hedgedoc' out
+                (( $(wc -c < out) < 200000 ))
+
+                # A failed sops writes nothing, and its stderr, which can quote a value, stays hidden.
+                age-keygen -o "$TMPDIR/other.key" 2> /dev/null
+                if SOPS_AGE_KEY_FILE="$TMPDIR/other.key" sauce import secrets.sops.yaml import.json $flags > out 2>&1; then
+                  exit 1
+                fi
+                # The output is compared byte for byte and never printed, so any other output of sops fails the check without reaching the log.
+                printf 'error: sops decrypt failed with exit status: 128, and sauce does not show its message, which can quote a value\n' | cmp -s - out
+                sums | diff before -
+
+                # A failed write to stdout after a link names the secrets in place on stderr, and leaves no staged file.
+                printf '{ "unused": "sso/miniflux", "hedgedoc_db": "kanidm/idm-admin-password" }\n' > full.json
+                if sauce import secrets.sops.yaml full.json $flags > /dev/full 2> out; then
+                  exit 1
+                fi
+                leaks out
+                cat out
+                grep -x 'imported "unused" as sso/miniflux' out
+                [[ -f example/secrets/sso/miniflux.sauce.yaml && ! -e example/secrets/kanidm/idm-admin-password.sauce.yaml ]]
+                [[ -z $(find example -name '*.new' ! -name api-token.sauce.yaml.new) ]]
+                touch $out
+              '';
         }
         // lib.optionalAttrs (pkgs.stdenv.hostPlatform.system == "x86_64-linux") {
           # Without "kvm" in requiredSystemFeatures, a builder with no KVM runs the test on emulation, slowly.

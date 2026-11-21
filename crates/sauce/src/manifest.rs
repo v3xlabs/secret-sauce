@@ -63,6 +63,17 @@ pub enum RuleError {
         machines: [String; 2],
         field: &'static str,
     },
+    #[error(
+        "secret {name} has the file {file:?}, which is not a relative path of plain names, so it can point outside the source root"
+    )]
+    FileOutside { name: Name, file: PathBuf },
+    #[error(
+        "the file {} of secret {} is a folder on the way to the file of secret {}",
+        file.display(),
+        names[0],
+        names[1]
+    )]
+    FileIsFolder { names: [Name; 2], file: PathBuf },
     #[error("secrets {} and {} have the same file {}", names[0], names[1], file.display())]
     SameFile { names: [Name; 2], file: PathBuf },
     #[error("{machine} reads secret {name}, and no machine defines it")]
@@ -389,15 +400,7 @@ impl Machines {
                 });
             }
         }
-        let mut files = BTreeMap::new();
-        for (name, secret) in &secrets {
-            if let Some(other) = files.insert(&secret.definition.file, name) {
-                return Err(RuleError::SameFile {
-                    names: [other.clone(), name.clone()],
-                    file: secret.definition.file.clone(),
-                });
-            }
-        }
+        check_files(&secrets)?;
         Ok(secrets)
     }
 }
@@ -428,6 +431,46 @@ pub fn source_root(flake: &Path) -> &Path {
         .ancestors()
         .find(|dir| dir.join(".git").exists())
         .unwrap_or(flake)
+}
+
+/// Checks that each file of a secret stays in the source root, and that no two files clash.
+fn check_files(secrets: &BTreeMap<Name, Secret<'_>>) -> Result<(), RuleError> {
+    let mut files = BTreeMap::new();
+    for (name, secret) in secrets {
+        let file = &secret.definition.file;
+        // The Nix module gives a clean relative path, and a `--manifest` file can give any path.
+        if file
+            .as_os_str()
+            .as_encoded_bytes()
+            .split(|byte| *byte == b'/')
+            .any(|part| matches!(part, b"" | b"." | b".."))
+        {
+            return Err(RuleError::FileOutside {
+                name: name.clone(),
+                file: file.clone(),
+            });
+        }
+        if let Some(other) = files.insert(file.as_path(), name) {
+            return Err(RuleError::SameFile {
+                names: [other.clone(), name.clone()],
+                file: file.clone(),
+            });
+        }
+    }
+    // A file that is also a folder of another file would make one of the two writes fail, or land in the wrong place.
+    for (file, name) in &files {
+        if let Some((folder, other)) = file
+            .ancestors()
+            .skip(1)
+            .find_map(|folder| files.get_key_value(folder))
+        {
+            return Err(RuleError::FileIsFolder {
+                names: [(*other).clone(), (*name).clone()],
+                file: folder.to_path_buf(),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn eval_machine(flake: &Path, name: &str, write_lock: bool) -> Result<Option<Manifest>, ReadError> {
@@ -563,5 +606,74 @@ mod tests {
             ),
             "{error:?}"
         );
+    }
+
+    #[test]
+    fn file_that_can_leave_the_source_root_stops() {
+        for (file, outside) in [
+            ("kanidm/freshrss-oauth.sauce.yaml", false),
+            ("secrets/..data.sauce.yaml", false),
+            ("/etc/a.sauce.yaml", true),
+            ("../a.sauce.yaml", true),
+            ("secrets/../../a.sauce.yaml", true),
+            ("./a.sauce.yaml", true),
+            ("secrets//a.sauce.yaml", true),
+            ("secrets/a.sauce.yaml/", true),
+        ] {
+            let machines: Machines = serde_json::from_value(serde_json::json!({
+                "notes": {
+                    "recipient": "age1notes",
+                    "adminRecipients": [],
+                    "read": [],
+                    "secrets": { "notes/a": { "file": file } }
+                }
+            }))
+            .unwrap();
+
+            let result = machines.secrets();
+
+            assert_eq!(
+                matches!(result, Err(RuleError::FileOutside { .. })),
+                outside,
+                "{file:?}: {:?}",
+                result.err()
+            );
+        }
+    }
+
+    #[test]
+    fn file_that_is_a_folder_of_another_file_stops() {
+        for (other, conflict) in [
+            ("secrets/a.sauce.yaml/b.sauce.yaml", true),
+            ("secrets/a.sauce.yaml/deeper/b.sauce.yaml", true),
+            ("secrets/a.sauce.yamlb/b.sauce.yaml", false),
+            ("secrets/a/b.sauce.yaml", false),
+        ] {
+            let machines: Machines = serde_json::from_value(serde_json::json!({
+                "notes": {
+                    "recipient": "age1notes",
+                    "adminRecipients": [],
+                    "read": [],
+                    "secrets": {
+                        "notes/a": { "file": "secrets/a.sauce.yaml" },
+                        "notes/b": { "file": other }
+                    }
+                }
+            }))
+            .unwrap();
+
+            let result = machines.secrets();
+
+            assert_eq!(
+                matches!(
+                    &result,
+                    Err(RuleError::FileIsFolder { names, file })
+                        if names[0].as_str() == "notes/a" && file.as_os_str() == "secrets/a.sauce.yaml"
+                ),
+                conflict,
+                "{other:?}: {:?}",
+                result.err()
+            );
+        }
     }
 }

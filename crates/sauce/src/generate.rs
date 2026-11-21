@@ -1,9 +1,10 @@
 use std::{
-    fs,
+    fs::{self, OpenOptions},
     io::{self, BufRead as _, IsTerminal as _, Write as _},
     path::{Path, PathBuf},
 };
 
+use rand::{RngCore as _, rngs::OsRng};
 use sauce::format::{self, Date, Facts, Name, Reader};
 
 use crate::{
@@ -331,15 +332,29 @@ pub fn save(path: &Path, text: &str) -> io::Result<()> {
     fs::rename(stage(path, text)?, path)
 }
 
-/// Writes the text for `path` to `<path>.new`, which a rename then puts in place.
+/// Writes the text for `path` to a new file with a random name next to it, which a rename or a hard link then puts in place.
+///
+/// The file is created exclusively, so a file or symbolic link that is already at that name, maybe the staged file of another writer, stays as it is.
 pub fn stage(path: &Path, text: &str) -> io::Result<PathBuf> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
+    let mut suffix = [0; 8];
+    OsRng
+        .try_fill_bytes(&mut suffix)
+        .map_err(|error| io::Error::other(error.to_string()))?;
     let mut temporary = path.as_os_str().to_owned();
-    temporary.push(".new");
+    temporary.push(format!(".{:016x}.new", u64::from_ne_bytes(suffix)));
     let temporary = PathBuf::from(temporary);
-    fs::write(&temporary, text)?;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)?;
+    if let Err(error) = file.write_all(text.as_bytes()) {
+        // The file has only part of the text, and nothing links to it yet.
+        let _ = fs::remove_file(&temporary);
+        return Err(error);
+    }
     Ok(temporary)
 }
 

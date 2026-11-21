@@ -90,6 +90,20 @@ It shows what it is about to do and asks first.
 `sauce edit 'asterisk/*'` opens only the matching secrets in `$EDITOR`, not the whole lot.
 `sauce rename` moves a secret and tells you which lines of Nix still use the old name.
 
+`sauce import config/voice.sops.yaml config/voice.import.json` moves values out of a sops file.
+The mapping file is a JSON object from each top-level key of the sops file to the name of a secret, such as `{ "voice_turn": "voice/turn" }`, so the mapping is readable in the PR that adds it.
+`sauce` runs `sops decrypt` from your PATH, so sops opens the file with your sops key, age or GPG, and the value reaches `sauce` through a pipe.
+`sauce` hides the messages of sops, because they can quote a value, so a failure shows only the exit status of sops.
+Both the output and the messages of `sops decrypt` can hold the values of the file, so do not run it on a terminal that others see or that keeps a log.
+Each value is a top-level string, and `sauce` keeps its bytes exactly, with no trim.
+It writes each mapped secret for the readers of its declaration, and it checks every mapped key before it writes any file.
+It never overwrites a `.sauce.yaml` file, and it says that it did not compare the value of a secret that it skips.
+It refuses a secret when a folder between the root of the flake and its `.sauce.yaml` file is a symbolic link, because the write would land where the link points.
+It writes every new file next to its place before it puts the first one in place, so a failed write puts no secret in place.
+Then it puts the files in place one at a time, and that is not a transaction.
+When one fails, the secrets that `sauce` listed as imported keep their file, and a second import skips them and does not compare their values.
+`--dry-run` runs the same checks, lists what `sauce` would write, and writes nothing.
+
 ## Looking without leaking
 
 `sauce search` is a fuzzy picker over the names of your secrets.
@@ -248,6 +262,8 @@ A post-quantum secret with a GPG reader is only as strong as the GPG key.
 A service that owns a secret can make its file larger until the 16 MiB are full, and then the next activation fails and the current secrets stay.
 
 Linux refuses a tmpfs that never goes to swap in an unprivileged user namespace, so secret-sauce does not support containers.
+
+`sauce import` moves each mapped value into memory that it wipes, but the buffers that `serde_json` fills while it parses the output of sops, and the values of the keys that the mapping does not name, are not wiped.
 
 ## How it is built
 

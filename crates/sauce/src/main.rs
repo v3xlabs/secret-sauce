@@ -4,6 +4,7 @@ mod edit;
 mod generate;
 mod get;
 mod identity;
+mod import;
 mod make;
 mod manifest;
 mod manifest_cache;
@@ -100,6 +101,18 @@ enum Command {
         source: Source,
         #[command(flatten)]
         identity: Identity,
+    },
+    /// Write the secrets that a mapping file names from a sops file, each for the readers that the machines declare, and never overwrite a .sauce.yaml file.
+    Import {
+        /// The sops file, which `sops decrypt` on PATH opens with your sops key.
+        sops: PathBuf,
+        /// A JSON object from each top-level key of the sops file to the name of a secret.
+        mapping: PathBuf,
+        /// Check every mapped key and list what sauce would write, and write nothing.
+        #[arg(long)]
+        dry_run: bool,
+        #[command(flatten)]
+        source: Source,
     },
     /// Pick a secret from a fuzzy list on the terminal and print its name, or print the names that hold TEXT with no terminal.
     Search {
@@ -268,6 +281,10 @@ fn manifest_exit(machines: &ReadManifests) -> ExitCode {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one match arm for each command, and each arm is a few lines"
+)]
 fn run(command: Command) -> Result<ExitCode, Box<dyn Error>> {
     match command {
         Command::List { source, identity } => {
@@ -309,6 +326,15 @@ fn run(command: Command) -> Result<ExitCode, Box<dyn Error>> {
                 dates,
                 identity.file.as_deref(),
             )?)
+        }
+        Command::Import {
+            sops,
+            mapping,
+            dry_run,
+            source,
+        } => {
+            let (machines, root) = source.load(Machines::eval)?;
+            Ok(import::import(&machines, &root, &sops, &mapping, dry_run)?)
         }
         Command::Rotate {
             pattern,
