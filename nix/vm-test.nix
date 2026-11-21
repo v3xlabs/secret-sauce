@@ -1,7 +1,6 @@
 {
   pkgs,
   sauce,
-  example,
   sealed,
   machines,
 }:
@@ -21,33 +20,74 @@ let
   changedValue = "changed-value-of-sso-hedgedoc";
   wrongKeyValue = "wrong-key-value-of-sso-hedgedoc";
 
-  files = sealed machines.notes values;
+  # One value for each secret of notes, so a secret that notes adds or drops fails the evaluation here.
+  files =
+    assert lib.assertMsg (
+      lib.attrNames values == lib.attrNames machines.notes.sauce.secrets
+    ) "The values of nix/vm-test.nix are not the secrets of the notes machine of example/.";
+    sealed machines.notes values;
   changed = "${sealed machines.notes { "sso/hedgedoc" = changedValue; }}/sso/hedgedoc.sauce.yaml";
   wrongKey = "${sealed machines.backup { "sso/hedgedoc" = wrongKeyValue; }}/sso/hedgedoc.sauce.yaml";
 in
 pkgs.testers.runNixOSTest {
   name = "sauce-install";
-  node.specialArgs.self = example;
 
   nodes.notes =
-    { lib, ... }:
-    {
-      imports = [
-        sauce.nixosModules.default
-        ../example/machines/notes.nix
+    { config, lib, ... }:
+    let
+      notes = machines.notes.sauce;
+      delivery = [
+        "owner"
+        "group"
+        "mode"
+        "restartUnits"
+        "reloadUnits"
       ];
+      delivered = lib.attrValues notes.secrets ++ lib.attrValues notes.templates;
+      units = lib.unique (
+        map (lib.removeSuffix ".service") (lib.concatMap (own: own.restartUnits ++ own.reloadUnits) delivered)
+      );
+      owners = lib.remove "root" (lib.unique (map (own: own.owner) delivered));
+      groups = lib.remove "root" (lib.unique (map (own: own.group) delivered));
+    in
+    {
+      imports = [ sauce.nixosModules.default ];
 
       sauce = {
-        adminRecipients = [ "age1kv6aj53yzlf5wyu32qnv39wh68apzgkqpv49c0g0zvh5fzpjqcyscym83z" ];
+        inherit (notes) recipient adminRecipients;
         identityFile = "${../example/snakeoil/notes.key}";
         defaultDir = files;
+        secrets = lib.mapAttrs (
+          _: secret: lib.getAttrs delivery secret // { neededForUsers = lib.mkDefault secret.neededForUsers; }
+        ) notes.secrets;
+        templates = lib.mapAttrs (
+          _: template: lib.getAttrs (delivery ++ [ "content" ]) template
+        ) notes.templates;
       };
-      # The public half of the key pair of backup does not exist until `sauce generate` runs.
-      users.users.root.openssh.authorizedKeys.keyFiles = lib.mkForce [ ];
-      virtualisation.memorySize = 2048;
-      # The VM has no network, so an ACME order fails and makes every switch fail.
-      systemd.services."acme-order-renew-auth.example.com".enable = false;
-      systemd.timers."acme-renew-auth.example.com".enable = false;
+
+      # The owners and groups of the files, which the services of notes make.
+      users = {
+        users = lib.genAttrs owners (name: {
+          isSystemUser = true;
+          inherit (machines.notes.users.users.${name}) group;
+        });
+        groups = lib.genAttrs groups (_: { });
+      };
+
+      # sauce-install fails on a unit that does not exist, so each unit that a file restarts has a stand-in.
+      # A stand-in reads the templates that restart it at start, as the real unit does.
+      systemd.services = lib.genAttrs units (unit: {
+        wantedBy = [ "multi-user.target" ];
+        serviceConfig = {
+          Type = "exec";
+          ExecStart = "${pkgs.coreutils}/bin/sleep infinity";
+          EnvironmentFile = lib.mapAttrsToList (name: _: config.sauce.templates.${name}.path) (
+            lib.filterAttrs (_: template: lib.elem "${unit}.service" template.restartUnits) notes.templates
+          );
+        };
+      });
+
+      virtualisation.cores = 2;
 
       specialisation.changed.configuration.sauce.secrets."sso/hedgedoc".file = lib.mkForce changed;
       specialisation.wrong-key.configuration.sauce.secrets."sso/hedgedoc".file = lib.mkForce wrongKey;
@@ -59,6 +99,29 @@ pkgs.testers.runNixOSTest {
     let
       system = nodes.notes.system.build.toplevel;
       closure = pkgs.closureInfo { rootPaths = [ system ]; };
+      # A search of the whole store closure takes about a minute on emulation, and a derivation finds the same files in seconds.
+      storeCheck =
+        pkgs.runCommand "sauce-vm-store-check"
+          {
+            toplevel = system;
+            values = lib.concatMapStringsSep "\n" lib.id (
+              lib.attrValues values
+              ++ [
+                changedValue
+                wrongKeyValue
+              ]
+            );
+            passAsFile = [ "values" ];
+          }
+          ''
+            paths=$(cat ${closure}/store-paths)
+            grep -rlFf "$valuesPath" $paths > hits || test $? -eq 1
+            if [[ -s hits ]]; then
+              cat hits
+              exit 1
+            fi
+            echo "searched $(wc -l < ${closure}/store-paths) store paths of the machine for $(grep -c . "$valuesPath") values, and found none" > $out
+          '';
     in
     ''
       def stat(path):
@@ -82,16 +145,7 @@ pkgs.testers.runNixOSTest {
           assert "CMD_SESSION_SECRET=${values."hedgedoc/session-secret"}" in env, env
 
       with subtest("no value is in the Nix store of the machine"):
-          notes.succeed("printf '%s\\n' ${
-            lib.escapeShellArgs (
-              lib.attrValues values
-              ++ [
-                changedValue
-                wrongKeyValue
-              ]
-            )
-          } > /tmp/values")
-          notes.fail("xargs grep -rlFf /tmp/values < ${closure}/store-paths")
+          print(open("${storeCheck}").read())
 
       with subtest("a changed secret restarts the units of its template"):
           notes.wait_for_unit("hedgedoc.service")

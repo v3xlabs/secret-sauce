@@ -694,7 +694,6 @@
             (import ./nix/vm-test.nix {
               inherit pkgs;
               sauce = self;
-              example = exampleFlake;
               sealed = pkgs.callPackage ./nix/seal.nix {
                 sauce = self.packages.${pkgs.stdenv.hostPlatform.system}.sauce;
               };
