@@ -192,7 +192,7 @@
                 sauce list --manifest ${manifests} 2> "$TMPDIR/stderr" | tee $out
                 grep -F 'are not checked, because no private key of an admin is set' "$TMPDIR/stderr"
                 test "$(tail -n +2 $out | wc -l)" -eq 7
-                grep -E '^SECRET +MACHINES +MADE BY +STATE$' $out
+                grep -E '^SECRET +MACHINES +MADE BY +SET +EXPIRES +STATE$' $out
                 grep -E '^backup/ssh-key +backup,offsite +ssh-ed25519 +✗$' $out
                 grep -E '^ddclient/api-token +notes +set +✗$' $out
                 grep -E '^hedgedoc/db-password +notes +alphanum, 40<48 +✗$' $out
@@ -205,16 +205,17 @@
                 cd checkout
                 flags="--manifest ${manifests}"
                 sauce generate $flags
-                printf token | sauce set ddclient/api-token --expires "$(date -d '+10 days' +%F)" $flags
+                printf token | sauce set ddclient/api-token --expires "$(date -u -d '+10 days' +%F)" $flags
 
                 sauce list $flags 2> /dev/null | tee without
                 [[ $(grep -c '✓$' without) -eq 7 ]]
+                grep -E '^ddclient/api-token +notes +set +✓$' without
 
                 SAUCE_IDENTITY=example/snakeoil/admin.key sauce list $flags 2> stderr | tee with
                 test ! -s stderr
                 [[ $(grep -c '✓$' with) -eq 6 ]]
-                grep -E '^ddclient/api-token +notes +set +⚠$' with
-                grep -E '^restic/password +notes,offsite +once alphanum, 40<48 +✓$' with
+                grep -E '^ddclient/api-token +notes +set +(today|1d ago) +in (9|10)d +⚠$' with
+                grep -E '^restic/password +notes,offsite +once alphanum, 40<48 +(today|1d ago) +✓$' with
                 if sauce list $flags --identity example/snakeoil/missing.key; then
                   exit 1
                 fi

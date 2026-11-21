@@ -42,19 +42,20 @@ sauce list
 ```
 
 ```
-SECRET                     MACHINES        MADE BY               STATE
-backup/ssh-key             backup,offsite  ssh-ed25519           ✗
-ddclient/api-token         notes           set                   ✗
-hedgedoc/db-password       notes           alphanum, 40<48       ✗
-kanidm/idm-admin-password  notes           alphanum, 40<48       ✗
-restic/password            notes,offsite   once alphanum, 40<48  ✗
-sso/hedgedoc               notes           alphanum, 40<48       ✗
-sso/miniflux               notes           alphanum, 40<48       ✗
+SECRET                     MACHINES        MADE BY               SET  EXPIRES  STATE
+backup/ssh-key             backup,offsite  ssh-ed25519                         ✗
+ddclient/api-token         notes           set                                 ✗
+hedgedoc/db-password       notes           alphanum, 40<48                     ✗
+kanidm/idm-admin-password  notes           alphanum, 40<48                     ✗
+restic/password            notes,offsite   once alphanum, 40<48                ✗
+sso/hedgedoc               notes           alphanum, 40<48                     ✗
+sso/miniflux               notes           alphanum, 40<48                     ✗
 The facts are encrypted, so expiry, changed generators and revoke are not checked, because no private key of an admin is set, in --identity, SAUCE_IDENTITY, SOPS_AGE_KEY_FILE or ~/.config/sops/age/keys.txt.
 ```
 
 `✓` marks a secret whose file exists, and `✗` a secret whose file is missing.
-The last line is on stderr, and it says that `sauce list` has no key to open the files with.
+The last line is on stderr, and it says that `sauce list` has no key to open the facts.
+Without a key that can read the facts, `SET` and `EXPIRES` stay empty.
 
 If the key file is found but none of its keys can read the secrets, `sauce list` and `sauce status` report the file once.
 Use `--identity <key-file>` to pick another key.
@@ -139,21 +140,23 @@ To edit it: sauce edit ddclient/api-token
 
 `sauce get ddclient/api-token --print` writes the value to stdout and nothing else, so it works in a pipe.
 
-With the key of an admin, `sauce list` opens the files, and marks `⚠` each secret whose declared file has a row in `sauce status`.
+With the key of an admin, `sauce list` opens the facts and shows how long ago each value was set and how long until it expires.
+If the recorded set date is ahead of today's UTC date, `SET` shows that date instead of an age.
+It marks `⚠` for a secret that needs attention in `sauce status`.
 
 ```sh
 sauce list
 ```
 
 ```
-SECRET                     MACHINES        MADE BY               STATE
-backup/ssh-key             backup,offsite  ssh-ed25519           ✓
-ddclient/api-token         notes           set                   ✓
-hedgedoc/db-password       notes           alphanum, 40<48       ✓
-kanidm/idm-admin-password  notes           alphanum, 40<48       ✓
-restic/password            notes,offsite   once alphanum, 40<48  ✓
-sso/hedgedoc               notes           alphanum, 40<48       ✓
-sso/miniflux               notes           alphanum, 40<48       ✓
+SECRET                     MACHINES        MADE BY               SET    EXPIRES  STATE
+backup/ssh-key             backup,offsite  ssh-ed25519           today           ✓
+ddclient/api-token         notes           set                   today  in 178d  ✓
+hedgedoc/db-password       notes           alphanum, 40<48       today           ✓
+kanidm/idm-admin-password  notes           alphanum, 40<48       today           ✓
+restic/password            notes,offsite   once alphanum, 40<48  today           ✓
+sso/hedgedoc               notes           alphanum, 40<48       today           ✓
+sso/miniflux               notes           alphanum, 40<48       today           ✓
 ```
 
 See what needs attention.

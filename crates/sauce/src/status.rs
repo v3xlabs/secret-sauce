@@ -49,10 +49,10 @@ impl Row {
     }
 }
 
-/// What is wrong with the file of one declared secret.
 pub struct Findings {
     pub problems: Vec<String>,
     pub no_reader: bool,
+    pub dates: Option<FactDates>,
 }
 
 impl Findings {
@@ -60,6 +60,30 @@ impl Findings {
         Self {
             problems,
             no_reader: false,
+            dates: None,
+        }
+    }
+}
+
+pub struct FactDates {
+    pub set: Date,
+    pub expiry: Option<Expiry>,
+}
+
+pub enum Expiry {
+    Expired(u64),
+    Today,
+    Soon(u64),
+    Later(u64),
+}
+
+impl Expiry {
+    fn new(today: Date, expires: Date) -> Self {
+        match today.days_until(expires) {
+            days @ ..0 => Self::Expired(days.unsigned_abs()),
+            0 => Self::Today,
+            days @ 1..=SOON_DAYS => Self::Soon(days.unsigned_abs()),
+            days => Self::Later(days.unsigned_abs()),
         }
     }
 }
@@ -74,10 +98,10 @@ pub struct Evaluator<'a> {
 }
 
 impl<'a> Evaluator<'a> {
-    pub fn new(admin: Option<&'a Admin>, partial: bool) -> Self {
+    pub fn new(admin: Option<&'a Admin>, partial: bool, today: Date) -> Self {
         Self {
             admin,
-            today: Date::today(),
+            today,
             partial,
             tried: 0,
             inaccessible: 0,
@@ -143,22 +167,25 @@ impl<'a> Evaluator<'a> {
                     return Findings {
                         problems,
                         no_reader: true,
+                        dates: None,
                     };
                 }
                 problems.push(format!("cannot be opened: {error}"));
                 return Findings::of(problems);
             }
         };
-        if let Some(expires) = facts.expires {
-            match self.today.days_until(expires) {
-                ..0 => problems.push(format!("expired on {expires}")),
-                0 => problems.push(String::from("expires today")),
-                days @ 1..=SOON_DAYS => {
+        let expiry = facts.expires.map(|expires| {
+            let expiry = Expiry::new(self.today, expires);
+            match expiry {
+                Expiry::Expired(_) => problems.push(format!("expired on {expires}")),
+                Expiry::Today => problems.push(String::from("expires today")),
+                Expiry::Soon(days) => {
                     problems.push(format!("expires on {expires}, in {days} days"));
                 }
-                _ => {}
+                Expiry::Later(_) => {}
             }
-        }
+            expiry
+        });
         if facts
             .generator
             .is_some_and(|digest| Some(digest) != secret.definition.digest())
@@ -183,7 +210,14 @@ impl<'a> Evaluator<'a> {
                 "is marked revoke, because a former reader knows the value{fix}"
             ));
         }
-        Findings::of(problems)
+        Findings {
+            problems,
+            no_reader: false,
+            dates: Some(FactDates {
+                set: facts.set,
+                expiry,
+            }),
+        }
     }
 }
 
@@ -198,7 +232,7 @@ pub fn status(
     let secrets = machines.secrets()?;
     let partial = machines.failures().is_some();
     let admin = Admin::find_if_set(identity)?;
-    let mut evaluator = Evaluator::new(admin.as_ref(), partial);
+    let mut evaluator = Evaluator::new(admin.as_ref(), partial, Date::today());
 
     let mut rows = Vec::new();
     for (name, secret) in &secrets {

@@ -14,6 +14,7 @@ mod set;
 mod status;
 
 use std::{
+    borrow::Cow,
     error::Error,
     fmt::Write as _,
     fs,
@@ -31,10 +32,10 @@ use crate::{
     identity::Admin,
     manifest::{Machines, ReadError, ReadManifests},
     set::Dates,
-    status::{Evaluator, StatusError},
+    status::{Evaluator, Expiry, StatusError},
 };
 
-const HEADER: [&str; 4] = ["SECRET", "MACHINES", "MADE BY", "STATE"];
+const HEADER: [&str; 6] = ["SECRET", "MACHINES", "MADE BY", "SET", "EXPIRES", "STATE"];
 
 /// Keeps the secrets of NixOS machines in git.
 #[derive(Parser)]
@@ -196,67 +197,100 @@ fn list(
 ) -> Result<(), Box<dyn Error>> {
     let secrets = machines.secrets()?;
     let admin = Admin::find_if_set(identity)?;
-    let mut evaluator = Evaluator::new(admin.as_ref(), machines.failures().is_some());
+    let today = Date::today();
+    let mut evaluator = Evaluator::new(admin.as_ref(), machines.failures().is_some(), today);
     let mut rows = Vec::new();
     for (name, secret) in &secrets {
         let path = root.join(&secret.definition.file);
-        let mark = match &admin {
-            None if path.exists() => Mark::Present,
-            None => Mark::Missing,
+        let (mark, dates) = match &admin {
+            None if path.exists() => (Mark::Present, None),
+            None => (Mark::Missing, None),
             Some(_) => match format::load(&path) {
                 Ok(text) => {
                     let findings = evaluator.check(name, &text, secret);
-                    if !findings.problems.is_empty() {
+                    let mark = if !findings.problems.is_empty() {
                         Mark::Warning
                     } else if findings.no_reader {
                         Mark::NoReader
                     } else {
                         Mark::Present
-                    }
+                    };
+                    (mark, findings.dates)
                 }
-                Err(error) if error.kind() == io::ErrorKind::NotFound => Mark::Missing,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => (Mark::Missing, None),
                 Err(source) => return Err(StatusError::Read { path, source }.into()),
             },
         };
+        let set = dates.as_ref().map_or(Cow::Borrowed(""), |dates| {
+            match today.days_until(dates.set) {
+                days @ ..0 => format!("{}d ago", days.unsigned_abs()).into(),
+                0 => Cow::Borrowed("today"),
+                _ => dates.set.to_string().into(),
+            }
+        });
+        let (expires, expiry_color) = match dates.and_then(|dates| dates.expiry) {
+            Some(Expiry::Expired(days)) => {
+                (format!("expired {days}d ago").into(), Some(Color::Red))
+            }
+            Some(Expiry::Today) => (Cow::Borrowed("today"), Some(Color::Yellow)),
+            Some(Expiry::Soon(days)) => (format!("in {days}d").into(), Some(Color::Yellow)),
+            Some(Expiry::Later(days)) => (format!("in {days}d").into(), None),
+            None => (Cow::Borrowed(""), None),
+        };
         rows.push((
             [
-                name.to_string(),
-                secret.machines.join(","),
-                secret.definition.made_by(),
+                Cow::Borrowed(name.as_str()),
+                Cow::Owned(secret.machines.join(",")),
+                Cow::Owned(secret.definition.made_by()),
+                set,
+                expires,
             ],
             mark,
+            expiry_color,
         ));
     }
 
-    let mut widths = [0; 3];
+    let mut widths = [0; 5];
     for (width, cell) in widths.iter_mut().zip(HEADER) {
         *width = cell.len();
     }
-    for (cells, _) in &rows {
+    for (cells, _, _) in &rows {
         for (width, cell) in widths.iter_mut().zip(cells) {
             *width = (*width).max(cell.len());
         }
     }
     let palette = Palette::stdout();
     let mut text = String::new();
-    let [name_width, machines_width, made_by_width] = widths;
-    let [name, machines, made_by, state] = HEADER;
+    let [
+        name_width,
+        machines_width,
+        made_by_width,
+        set_width,
+        expires_width,
+    ] = widths;
+    let [name, machines, made_by, set, expires, state] = HEADER;
     writeln!(
         text,
-        "{name:name_width$}  {machines:machines_width$}  {made_by:made_by_width$}  {state}"
+        "{name:name_width$}  {machines:machines_width$}  {made_by:made_by_width$}  {set:set_width$}  {expires:expires_width$}  {state}"
     )?;
-    for ([name, machines, made_by], mark) in &rows {
+    for ([name, machines, made_by, set, expires], mark, expiry_color) in rows {
         let (sign, color) = match mark {
             Mark::Present => ("✓", Color::Green),
             Mark::NoReader if evaluator.all_inaccessible() => ("✓", Color::Green),
             Mark::Warning | Mark::NoReader => ("⚠", Color::Yellow),
             Mark::Missing => ("✗", Color::Red),
         };
-        writeln!(
+        write!(
             text,
-            "{name:name_width$}  {machines:machines_width$}  {made_by:made_by_width$}  {}",
-            palette.paint(color, sign)
+            "{name:name_width$}  {machines:machines_width$}  {made_by:made_by_width$}  {set:set_width$}  "
         )?;
+        let padding = expires_width - expires.len();
+        if let Some(expiry_color) = expiry_color {
+            write!(text, "{}", palette.paint(expiry_color, expires))?;
+        } else {
+            text.push_str(&expires);
+        }
+        writeln!(text, "{:padding$}  {}", "", palette.paint(color, sign))?;
     }
     io::stdout().write_all(text.as_bytes())?;
     evaluator.finish();
