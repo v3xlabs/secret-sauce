@@ -18,9 +18,10 @@ let
     };
 
   textRecipeOptions = {
-    encoding = optional types.str "The alphabet of the value, such as `alphanum` or `hex`.";
+    encoding = optional types.str "The encoding of the value: `alphanum`, `hex`, `base64`, `base64url` or `digits`.";
     min = optional types.ints.positive "The least number of random characters.";
     max = optional types.ints.positive "The largest number of random characters.";
+    bytes = optional types.ints.positive "The fixed number of random bytes before `hex`, `base64` or `base64url` encoding, instead of `min` and `max`.";
   };
 
   generator = types.submodule {
@@ -29,11 +30,7 @@ let
     };
   };
 
-  once = types.submodule {
-    options = textRecipeOptions // {
-      bytes = optional types.ints.positive "The fixed number of random bytes before hex encoding, instead of `min` and `max`.";
-    };
-  };
+  once = types.submodule { options = textRecipeOptions; };
 
   delivery = own: path: {
     owner = mkOption {

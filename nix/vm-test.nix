@@ -12,6 +12,7 @@ let
   values = lib.genAttrs [
     "ddclient/api-token"
     "hedgedoc/db-password"
+    "hedgedoc/session-secret"
     "kanidm/idm-admin-password"
     "restic/password"
     "sso/hedgedoc"
@@ -78,6 +79,7 @@ pkgs.testers.runNixOSTest {
           env = read("/run/sauce/rendered/hedgedoc-env")
           assert "hedgedoc:${values."hedgedoc/db-password"}@localhost" in env, env
           assert "CMD_OAUTH2_CLIENT_SECRET=${values."sso/hedgedoc"}" in env, env
+          assert "CMD_SESSION_SECRET=${values."hedgedoc/session-secret"}" in env, env
 
       with subtest("no value is in the Nix store of the machine"):
           notes.succeed("printf '%s\\n' ${

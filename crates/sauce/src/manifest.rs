@@ -97,6 +97,7 @@ pub struct Generator {
     pub encoding: Option<String>,
     pub min: Option<u32>,
     pub max: Option<u32>,
+    pub bytes: Option<u32>,
     pub keypair: Option<String>,
 }
 
@@ -158,12 +159,14 @@ impl Definition {
     /// The short form of [`Definition::declaration`] for `sauce list`, or `set` for a value that `sauce set` gives.
     /// A declaration with other fields keeps its long form, so that `sauce list` does not hide it.
     pub fn made_by(&self) -> String {
+        let prefix = if self.once.is_some() { "once " } else { "" };
         match (&self.generator, &self.once) {
             (
                 Some(Generator {
                     encoding: None,
                     min: None,
                     max: None,
+                    bytes: None,
                     keypair: Some(keypair),
                 }),
                 None,
@@ -173,6 +176,7 @@ impl Definition {
                     encoding: Some(encoding),
                     min: Some(min),
                     max: Some(max),
+                    bytes: None,
                     keypair: None,
                 }),
                 None,
@@ -186,7 +190,6 @@ impl Definition {
                     bytes: None,
                 }),
             ) => {
-                let prefix = if self.once.is_some() { "once " } else { "" };
                 if min == max {
                     format!("{prefix}{encoding}, {min}")
                 } else {
@@ -194,6 +197,16 @@ impl Definition {
                 }
             }
             (
+                Some(Generator {
+                    encoding: Some(encoding),
+                    min: None,
+                    max: None,
+                    bytes: Some(bytes),
+                    keypair: None,
+                }),
+                None,
+            )
+            | (
                 None,
                 Some(Once {
                     encoding: Some(encoding),
@@ -201,7 +214,7 @@ impl Definition {
                     max: None,
                     bytes: Some(bytes),
                 }),
-            ) => format!("once {encoding}, {bytes} B"),
+            ) => format!("{prefix}{encoding}, {bytes} B"),
             _ => self.declaration().unwrap_or_else(|| String::from("set")),
         }
     }
@@ -236,6 +249,9 @@ impl fmt::Display for Generator {
         }
         if let Some(max) = self.max {
             write!(f, " max={max}")?;
+        }
+        if let Some(bytes) = self.bytes {
+            write!(f, " bytes={bytes}")?;
         }
         if let Some(keypair) = &self.keypair {
             write!(f, " keypair={keypair}")?;

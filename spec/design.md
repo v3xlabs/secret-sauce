@@ -44,10 +44,33 @@ sauce.secrets."litellm/salt-key".once = { encoding = "alphanum"; min = 40; max =
 ```
 
 [LiteLLM derives its encryption key from the salt](https://docs.litellm.ai/docs/proxy/security_encryption_faq#how-is-it-encrypted), so the salt itself does not need a fixed length.
-Use a fixed length only when the software requires one.
-For `once`, `encoding = "hex"; bytes = 32;` requests exactly 32 random bytes before hex encoding.
+Use a fixed length only when the software requires one, as `bytes` below does.
 Keep the recipe of an existing `once` secret.
 A shorter bound can prevent re-encryption of its existing value.
+
+`generator` and `once` take the same two shapes, with any of these encodings.
+
+- `min` and `max` give random characters of the alphabet, with a random length between them.
+- `bytes = N` gives N random bytes, encoded.
+  The length is then fixed, for software that decodes the value and needs an exact byte count.
+
+| Encoding | Alphabet | `bytes` output |
+|---|---|---|
+| `alphanum` | `A-Z a-z 0-9` | not offered, because it is not a decoding |
+| `hex` | `0-9 a-f` | lower case hex |
+| `base64` | `A-Z a-z 0-9 + /` | standard base64 with `=` padding, as `openssl rand -base64` |
+| `base64url` | `A-Z a-z 0-9 - _` | URL-safe base64 without padding, as RFC 4648 section 5 |
+| `digits` | `0-9` | not offered |
+
+The bound of `bytes` is the encoded length, so the padding step of the file follows it.
+`sauce` refuses a declaration that mixes the two shapes, and `bytes` with an encoding that has no output for it.
+
+```nix
+sauce.secrets."app/signing-key".generator = { encoding = "base64"; bytes = 32; };
+sauce.secrets."app/cookie-key".generator = { encoding = "base64url"; bytes = 32; };
+```
+
+The first value is 44 characters, the second 43.
 
 A secret with neither is one you bring yourself, such as an API token from a provider.
 You paste it in with `sauce set`.

@@ -16,6 +16,7 @@ Never keep a private key in your own repository.
 | Secret | Defined in | Read by |
 |---|---|---|
 | `hedgedoc/db-password` | `services/hedgedoc.nix` | `notes`, in `services/hedgedoc.nix` and `services/postgresql.nix` |
+| `hedgedoc/session-secret` | `services/hedgedoc.nix` | `notes`, in the template of `services/hedgedoc.nix` |
 | `kanidm/idm-admin-password` | `services/kanidm.nix` | `notes` |
 | `sso/hedgedoc`, `sso/miniflux` | the loop over `sso.clients` in `services/kanidm.nix` | `notes` |
 | `ddclient/api-token` | `services/ddclient.nix` | `notes` |
@@ -46,6 +47,7 @@ SECRET                     MACHINES        MADE BY               SET  EXPIRES  S
 backup/ssh-key             backup,offsite  ssh-ed25519                         ✗
 ddclient/api-token         notes           set                                 ✗
 hedgedoc/db-password       notes           alphanum, 40<48                     ✗
+hedgedoc/session-secret    notes           base64url, 32 B                     ✗
 kanidm/idm-admin-password  notes           alphanum, 40<48                     ✗
 restic/password            notes,offsite   once alphanum, 40<48                ✗
 sso/hedgedoc               notes           alphanum, 40<48                     ✗
@@ -70,13 +72,14 @@ sauce generate
 ```
 created backup/ssh-key & backup/ssh-key.pub
 created hedgedoc/db-password
+created hedgedoc/session-secret
 created kanidm/idm-admin-password
 created restic/password
 created sso/hedgedoc
 created sso/miniflux
 Set these secrets manually:
   sauce set ddclient/api-token
-Generated: 6 created, 0 re-encrypted, 1 needs a value.
+Generated: 7 created, 0 re-encrypted, 1 needs a value.
 ```
 
 Each secret is encrypted for the admin keys and for the machines that read it, so this needs no private key.
@@ -153,6 +156,7 @@ SECRET                     MACHINES        MADE BY               SET    EXPIRES 
 backup/ssh-key             backup,offsite  ssh-ed25519           today           ✓
 ddclient/api-token         notes           set                   today  in 178d  ✓
 hedgedoc/db-password       notes           alphanum, 40<48       today           ✓
+hedgedoc/session-secret    notes           base64url, 32 B       today           ✓
 kanidm/idm-admin-password  notes           alphanum, 40<48       today           ✓
 restic/password            notes,offsite   once alphanum, 40<48  today           ✓
 sso/hedgedoc               notes           alphanum, 40<48       today           ✓
@@ -186,6 +190,7 @@ The list draws on the terminal, with no value, and narrows as you type.
 ❯ sso/hedgedoc               notes           generator encoding=alphanum min=40 max=48
   sso/miniflux               notes           generator encoding=alphanum min=40 max=48
   hedgedoc/db-password       notes           generator encoding=alphanum min=40 max=48
+  hedgedoc/session-secret    notes           generator encoding=base64url bytes=32
   kanidm/idm-admin-password  notes           generator encoding=alphanum min=40 max=48
   restic/password            notes,offsite   once encoding=alphanum min=40 max=48
   backup/ssh-key             backup,offsite  generator keypair=ssh-ed25519

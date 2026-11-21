@@ -15,6 +15,11 @@ in
     restartUnits = [ "postgresql-setup.service" ];
   };
 
+  sauce.secrets."hedgedoc/session-secret".generator = {
+    encoding = "base64url";
+    bytes = 32;
+  };
+
   sso.clients.hedgedoc = {
     displayName = "HedgeDoc";
     originUrl = "https://notes.example.com/auth/oauth2/callback";
@@ -26,6 +31,7 @@ in
     content = ''
       CMD_DB_URL=postgres://hedgedoc:${placeholder."hedgedoc/db-password"}@localhost/hedgedoc
       CMD_OAUTH2_CLIENT_SECRET=${placeholder."sso/hedgedoc"}
+      CMD_SESSION_SECRET=${placeholder."hedgedoc/session-secret"}
     '';
   };
 
