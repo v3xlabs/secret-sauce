@@ -87,6 +87,8 @@ pub struct Definition {
     pub file: PathBuf,
     pub generator: Option<Generator>,
     pub once: Option<Once>,
+    #[serde(rename = "maxLength")]
+    pub max_length: Option<usize>,
     pub note: Option<String>,
 }
 
@@ -215,6 +217,7 @@ impl Definition {
             ("file", self.file != other.file),
             ("generator", self.generator != other.generator),
             ("once", self.once != other.once),
+            ("maxLength", self.max_length != other.max_length),
             ("note", self.note != other.note),
         ]
         .into_iter()

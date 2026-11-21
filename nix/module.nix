@@ -76,6 +76,7 @@ let
       options = {
         generator = optional generator "How `sauce` makes the value, and makes it again on `sauce rotate`.";
         once = optional once "How `sauce` makes the value one time.";
+        maxLength = optional (types.ints.between 1 65532) "The maximum length in bytes of a value you bring yourself.";
         note = optional types.str "Text that `sauce` shows next to the secret.";
         file = optional types.path "The `.sauce.yaml` file of the secret.";
         neededForUsers = mkOption {
@@ -143,6 +144,7 @@ let
     || lib.any (field: secret.${field} != null) [
       "generator"
       "once"
+      "maxLength"
       "note"
       "file"
     ];
@@ -151,12 +153,14 @@ let
     name: secret:
     if secret.generator != null && secret.once != null then
       throw "sauce.secrets.\"${name}\" sets both generator and once, and a secret can have one of them or neither."
+    else if secret.maxLength != null && (secret.generator != null || secret.once != null) then
+      throw "sauce.secrets.\"${name}\" sets maxLength with generator or once, and maxLength is for a value you bring yourself."
     else
       present {
         file = fileOf name secret;
         generator = if secret.generator == null then null else present secret.generator;
         once = if secret.once == null then null else present secret.once;
-        inherit (secret) note;
+        inherit (secret) maxLength note;
       };
 
   forUsers = lib.filterAttrs (_: secret: secret.neededForUsers) cfg.secrets;

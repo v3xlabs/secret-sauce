@@ -326,7 +326,10 @@ fn step<'a>(
                 "{key:?}: {name} is a key pair, and sauce generate makes it with its public key"
             ));
         }
-        Ok(recipe) => recipe.map_or(SET_BOUND, |recipe| recipe.bound()),
+        Ok(recipe) => recipe.map_or(
+            secret.definition.max_length.unwrap_or(SET_BOUND),
+            |recipe| recipe.bound(),
+        ),
         Err(error) => return Step::Refuse(format!("{key:?}: secret {name}: {error}")),
     };
     if value.expose().len() > bound {

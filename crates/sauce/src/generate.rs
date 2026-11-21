@@ -406,6 +406,9 @@ fn step<'a>(
         readers: &secret.readers,
         gained,
         lost,
-        bound: recipe.as_ref().map_or(SET_BOUND, Recipe::bound),
+        bound: recipe.as_ref().map_or(
+            secret.definition.max_length.unwrap_or(SET_BOUND),
+            Recipe::bound,
+        ),
     }))
 }

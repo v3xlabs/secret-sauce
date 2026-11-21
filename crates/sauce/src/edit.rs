@@ -248,7 +248,10 @@ fn ask(name: &Name) -> io::Result<Answer> {
 fn bound(name: &Name, secret: &Secret<'_>) -> Result<usize, EditError> {
     match Recipe::new(secret.definition) {
         Ok(Some(Recipe::Ed25519)) => Err(EditError::KeyPair(name.clone())),
-        Ok(recipe) => Ok(recipe.map_or(SET_BOUND, |recipe| recipe.bound())),
+        Ok(recipe) => Ok(recipe.map_or(
+            secret.definition.max_length.unwrap_or(SET_BOUND),
+            |recipe| recipe.bound(),
+        )),
         Err(source) => Err(EditError::Recipe {
             name: name.clone(),
             source,

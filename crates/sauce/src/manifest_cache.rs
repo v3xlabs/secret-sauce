@@ -14,7 +14,7 @@ use sha2::{Digest as _, Sha256};
 use crate::manifest::{Machines, ReadError, ReadManifests};
 
 // Bump when the stored declarations or evaluator arguments change.
-const CACHE_SCHEMA: u32 = 1;
+const CACHE_SCHEMA: u32 = 2;
 
 #[derive(Deserialize, Serialize)]
 struct Cached {

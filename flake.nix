@@ -76,6 +76,13 @@
           manifests = pkgs.writeText "manifests.json" (
             builtins.toJSON (lib.mapAttrs (name: _: manifest name) example)
           );
+          longManifests = pkgs.writeText "long-manifests.json" (
+            builtins.toJSON (lib.mapAttrs (name: machine: if name == "notes" then
+              (machine.extendModules {
+                modules = [ { sauce.secrets."ddclient/api-token".maxLength = 4096; } ];
+              }).config.sauce.manifest
+            else manifest name) exampleFlake.nixosConfigurations)
+          );
           # `offsite` also reads `ddclient/api-token`, so a `sauce generate` back to `manifests` marks it `revoke`.
           widerManifests = pkgs.writeText "manifests.json" (
             builtins.toJSON (
@@ -116,6 +123,16 @@
             {
               ok = (manifest "backup").secrets."backup/ssh-key" == (manifest "offsite").secrets."backup/ssh-key";
               message = "Two machines that import one module give its secret the same definition.";
+            }
+            {
+              ok =
+                let
+                  broken = exampleFlake.nixosConfigurations.notes.extendModules {
+                    modules = [ { sauce.secrets."hedgedoc/db-password".maxLength = 4096; } ];
+                  };
+                in
+                !(builtins.tryEval (builtins.deepSeq broken.config.sauce.manifest true)).success;
+              message = "maxLength with a generator is refused.";
             }
             {
               ok =
@@ -302,6 +319,13 @@
                 if head -c 253 /dev/zero | tr '\0' a | sauce set ddclient/api-token $flags; then
                   exit 1
                 fi
+                longFlags="--manifest ${longManifests}"
+                if head -c 4097 /dev/zero | tr '\0' a | sauce set ddclient/api-token $longFlags 2> error; then
+                  exit 1
+                fi
+                grep -F '4096' error
+                head -c 4096 /dev/zero | tr '\0' a | sauce set ddclient/api-token $longFlags
+                [[ $(grep '^value: ' example/secrets/ddclient/api-token.sauce.yaml | cut -d' ' -f2 | base64 -d | wc -c) -eq 8208 ]]
                 touch $out
               '';
           daily =

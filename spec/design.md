@@ -56,6 +56,13 @@ You paste it in with `sauce set`.
 sauce.secrets."github/pat" = { };
 ```
 
+For a larger value, declare its maximum length in bytes.
+The bound selects the padding step, and `sauce` refuses a longer value.
+
+```nix
+sauce.secrets."tls/private-key".maxLength = 4096;
+```
+
 On the host, a secret is a file at `/run/sauce/<name>` with the owner and mode you gave it.
 Templates work as they do in sops-nix, for the env file that needs two secrets and some plain settings.
 
