@@ -117,6 +117,8 @@ struct Manifest {
 #[derive(Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub struct Once {
     pub encoding: Option<String>,
+    pub min: Option<u32>,
+    pub max: Option<u32>,
     pub bytes: Option<u32>,
 }
 
@@ -161,17 +163,29 @@ impl Definition {
                     keypair: None,
                 }),
                 None,
+            )
+            | (
+                None,
+                Some(Once {
+                    encoding: Some(encoding),
+                    min: Some(min),
+                    max: Some(max),
+                    bytes: None,
+                }),
             ) => {
+                let prefix = if self.once.is_some() { "once " } else { "" };
                 if min == max {
-                    format!("{encoding}, {min}")
+                    format!("{prefix}{encoding}, {min}")
                 } else {
-                    format!("{encoding}, {min}<{max}")
+                    format!("{prefix}{encoding}, {min}<{max}")
                 }
             }
             (
                 None,
                 Some(Once {
                     encoding: Some(encoding),
+                    min: None,
+                    max: None,
                     bytes: Some(bytes),
                 }),
             ) => format!("once {encoding}, {bytes} B"),
@@ -393,6 +407,12 @@ impl fmt::Display for Once {
         f.write_str("once")?;
         if let Some(encoding) = &self.encoding {
             write!(f, " encoding={encoding}")?;
+        }
+        if let Some(min) = self.min {
+            write!(f, " min={min}")?;
+        }
+        if let Some(max) = self.max {
+            write!(f, " max={max}")?;
         }
         if let Some(bytes) = self.bytes {
             write!(f, " bytes={bytes}")?;

@@ -42,14 +42,14 @@ sauce list
 ```
 
 ```
-SECRET                     MACHINES        MADE BY          STATE
-backup/ssh-key             backup,offsite  ssh-ed25519      ✗
-ddclient/api-token         notes           set              ✗
-hedgedoc/db-password       notes           alphanum, 40<48  ✗
-kanidm/idm-admin-password  notes           alphanum, 40<48  ✗
-restic/password            notes,offsite   once hex, 32 B   ✗
-sso/hedgedoc               notes           alphanum, 40<48  ✗
-sso/miniflux               notes           alphanum, 40<48  ✗
+SECRET                     MACHINES        MADE BY               STATE
+backup/ssh-key             backup,offsite  ssh-ed25519           ✗
+ddclient/api-token         notes           set                   ✗
+hedgedoc/db-password       notes           alphanum, 40<48       ✗
+kanidm/idm-admin-password  notes           alphanum, 40<48       ✗
+restic/password            notes,offsite   once alphanum, 40<48  ✗
+sso/hedgedoc               notes           alphanum, 40<48       ✗
+sso/miniflux               notes           alphanum, 40<48       ✗
 The facts are encrypted, so expiry, changed generators and revoke are not checked, because no private key of an admin is set, in --identity, SAUCE_IDENTITY, SOPS_AGE_KEY_FILE or ~/.config/sops/age/keys.txt.
 ```
 
@@ -146,14 +146,14 @@ sauce list
 ```
 
 ```
-SECRET                     MACHINES        MADE BY          STATE
-backup/ssh-key             backup,offsite  ssh-ed25519      ✓
-ddclient/api-token         notes           set              ✓
-hedgedoc/db-password       notes           alphanum, 40<48  ✓
-kanidm/idm-admin-password  notes           alphanum, 40<48  ✓
-restic/password            notes,offsite   once hex, 32 B   ✓
-sso/hedgedoc               notes           alphanum, 40<48  ✓
-sso/miniflux               notes           alphanum, 40<48  ✓
+SECRET                     MACHINES        MADE BY               STATE
+backup/ssh-key             backup,offsite  ssh-ed25519           ✓
+ddclient/api-token         notes           set                   ✓
+hedgedoc/db-password       notes           alphanum, 40<48       ✓
+kanidm/idm-admin-password  notes           alphanum, 40<48       ✓
+restic/password            notes,offsite   once alphanum, 40<48  ✓
+sso/hedgedoc               notes           alphanum, 40<48       ✓
+sso/miniflux               notes           alphanum, 40<48       ✓
 ```
 
 See what needs attention.
@@ -184,7 +184,7 @@ The list draws on the terminal, with no value, and narrows as you type.
   sso/miniflux               notes           generator encoding=alphanum min=40 max=48
   hedgedoc/db-password       notes           generator encoding=alphanum min=40 max=48
   kanidm/idm-admin-password  notes           generator encoding=alphanum min=40 max=48
-  restic/password            notes,offsite   once encoding=hex bytes=32
+  restic/password            notes,offsite   once encoding=alphanum min=40 max=48
   backup/ssh-key             backup,offsite  generator keypair=ssh-ed25519
 ```
 

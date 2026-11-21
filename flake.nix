@@ -196,7 +196,7 @@
                 grep -E '^backup/ssh-key +backup,offsite +ssh-ed25519 +✗$' $out
                 grep -E '^ddclient/api-token +notes +set +✗$' $out
                 grep -E '^hedgedoc/db-password +notes +alphanum, 40<48 +✗$' $out
-                grep -E '^restic/password +notes,offsite +once hex, 32 B +✗$' $out
+                grep -E '^restic/password +notes,offsite +once alphanum, 40<48 +✗$' $out
 
                 cd "$TMPDIR"
                 mkdir checkout
@@ -214,7 +214,7 @@
                 test ! -s stderr
                 [[ $(grep -c '✓$' with) -eq 6 ]]
                 grep -E '^ddclient/api-token +notes +set +⚠$' with
-                grep -E '^restic/password +notes,offsite +once hex, 32 B +✓$' with
+                grep -E '^restic/password +notes,offsite +once alphanum, 40<48 +✓$' with
                 if sauce list $flags --identity example/snakeoil/missing.key; then
                   exit 1
                 fi
@@ -293,6 +293,7 @@
 
                 value=$(sauce get hedgedoc/db-password --print $flags --identity $keys/admin.key)
                 [[ $value =~ ^[A-Za-z0-9]{40,48}$ ]]
+                sauce get restic/password --print $flags --identity $keys/admin.key | grep -Eqx '[A-Za-z0-9]{40,48}'
                 if sauce get hedgedoc/db-password --print $flags --identity $keys/backup.key; then
                   exit 1
                 fi

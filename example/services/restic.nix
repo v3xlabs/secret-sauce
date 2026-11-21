@@ -1,8 +1,9 @@
 { config, ... }:
 {
   sauce.secrets."restic/password".once = {
-    encoding = "hex";
-    bytes = 32;
+    encoding = "alphanum";
+    min = 40;
+    max = 48;
   };
 
   services.postgresqlBackup.enable = true;

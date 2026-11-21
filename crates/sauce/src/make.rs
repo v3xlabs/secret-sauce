@@ -37,7 +37,7 @@ pub enum Recipe {
 #[derive(Debug, thiserror::Error)]
 pub enum RecipeError {
     #[error(
-        "sauce cannot make `{0}`, and makes `encoding` alphanum or hex with `min` and `max`, `once` hex with `bytes`, or `keypair` ssh-ed25519"
+        "sauce cannot make `{0}`; use alphanum or hex with `min` and `max`, hex `once` with `bytes` instead, or an ssh-ed25519 `generator` key pair"
     )]
     Unsupported(String),
     #[error("`{0}` makes values longer than the {LARGEST} bytes that a file holds")]
@@ -131,11 +131,7 @@ impl Recipe {
                 min: Some(min),
                 max: Some(max),
                 keypair: None,
-            } if min <= max => Some(Self::Text {
-                alphabet: alphabet(encoding)?,
-                min: usize::try_from(*min).ok()?,
-                max: usize::try_from(*max).ok()?,
-            }),
+            } => Self::text(encoding, *min, *max),
             _ => None,
         }
     }
@@ -144,10 +140,29 @@ impl Recipe {
         match once {
             Once {
                 encoding: Some(encoding),
+                min: None,
+                max: None,
                 bytes: Some(bytes),
             } if encoding == "hex" => Some(Self::HexBytes(usize::try_from(*bytes).ok()?)),
+            Once {
+                encoding: Some(encoding),
+                min: Some(min),
+                max: Some(max),
+                bytes: None,
+            } => Self::text(encoding, *min, *max),
             _ => None,
         }
+    }
+
+    fn text(encoding: &str, min: u32, max: u32) -> Option<Self> {
+        if min > max {
+            return None;
+        }
+        Some(Self::Text {
+            alphabet: alphabet(encoding)?,
+            min: usize::try_from(min).ok()?,
+            max: usize::try_from(max).ok()?,
+        })
     }
 }
 

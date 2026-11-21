@@ -40,8 +40,14 @@ A secret with `once` is made a single time and then left alone.
 Use it for a key that encrypts stored data, where a new value means the old data is gone.
 
 ```nix
-sauce.secrets."litellm/salt-key".once = { encoding = "hex"; bytes = 32; };
+sauce.secrets."litellm/salt-key".once = { encoding = "alphanum"; min = 40; max = 48; };
 ```
+
+[LiteLLM derives its encryption key from the salt](https://docs.litellm.ai/docs/proxy/security_encryption_faq#how-is-it-encrypted), so the salt itself does not need a fixed length.
+Use a fixed length only when the software requires one.
+For `once`, `encoding = "hex"; bytes = 32;` requests exactly 32 random bytes before hex encoding.
+Keep the recipe of an existing `once` secret.
+A shorter bound can prevent re-encryption of its existing value.
 
 A secret with neither is one you bring yourself, such as an API token from a provider.
 You paste it in with `sauce set`.

@@ -17,19 +17,21 @@ let
       inherit description;
     };
 
+  textRecipeOptions = {
+    encoding = optional types.str "The alphabet of the value, such as `alphanum` or `hex`.";
+    min = optional types.ints.positive "The least number of random characters.";
+    max = optional types.ints.positive "The largest number of random characters.";
+  };
+
   generator = types.submodule {
-    options = {
-      encoding = optional types.str "The alphabet of the value, such as `alphanum` or `hex`.";
-      min = optional types.ints.positive "The least number of random characters.";
-      max = optional types.ints.positive "The largest number of random characters.";
+    options = textRecipeOptions // {
       keypair = optional types.str "The type of a key pair, such as `ssh-ed25519`.";
     };
   };
 
   once = types.submodule {
-    options = {
-      encoding = optional types.str "The alphabet of the value, such as `hex`.";
-      bytes = optional types.ints.positive "The number of random bytes, before encoding.";
+    options = textRecipeOptions // {
+      bytes = optional types.ints.positive "The fixed number of random bytes before hex encoding, instead of `min` and `max`.";
     };
   };
 

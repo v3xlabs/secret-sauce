@@ -9,7 +9,7 @@ Declare a secret next to the service that uses it:
 sauce.secrets."kanidm/oauth2/freshrss".generator = { encoding = "alphanum"; min = 40; max = 48; };
 
 # made one time and never touched again
-sauce.secrets."litellm/salt-key".once = { encoding = "hex"; bytes = 32; };
+sauce.secrets."litellm/salt-key".once = { encoding = "alphanum"; min = 40; max = 48; };
 
 # a token somebody else issues, you paste it in with `sauce set`
 sauce.secrets."github/pat" = { };
