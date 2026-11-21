@@ -11,7 +11,7 @@ use std::{
 use sauce::format::{self, Date, Facts, Name, NameError, Value};
 
 use crate::{
-    generate,
+    generate, gpg,
     identity::{Admin, IdentityError, OpenError},
     make::{Recipe, RecipeError, SET_BOUND},
     manifest::{Machines, RuleError, Secret},
@@ -335,7 +335,7 @@ fn edit_one(
         revoke: false,
         ..facts
     };
-    let text = format::write(name, &new, &facts, bound, &secret.readers)?;
+    let text = format::write(name, &new, &facts, bound, &secret.readers, gpg::wrap)?;
     generate::save(path, &text).map_err(|source| EditError::Write {
         path: path.to_owned(),
         source,

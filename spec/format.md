@@ -44,7 +44,18 @@ generator: 5d1c09e7...
 - `keys` lists the readers.
   Each entry has `for`, which is `admin` or the name of a host, then the public key in `age` or `pgp`, then `wrap`.
   An age `wrap` is the stanzas that the age library returns for that key, one line each.
-  A GPG `wrap` is a gpg message that holds the file key.
+  `pgp` is the fingerprint of the primary key of a GPG key, as 40 upper case hex characters, and it is valid only with `for: admin`, because a host reads with its age key.
+  A file has at most one entry for each fingerprint, so gpg gets at most one try for a key in each file.
+  A GPG `wrap` follows `wrap:` on the same line.
+  It is the OpenPGP message that gpg wrote for that key, in base64 with no padding, and it is at most 4096 bytes.
+
+A GPG entry looks like this.
+
+```yaml
+  - for: admin
+    pgp: 9F2C41D0...
+    wrap: hF4DI3eq3vlFN38SAQdA...
+```
 
 The file is YAML in block style, in a strict subset that has one spelling for each field.
 A reader parses that subset itself, never with a YAML library, and rejects anything else.
@@ -88,7 +99,9 @@ A `.sauce.yaml` file follows age where it can.
 
 - Each write makes a new 16-byte file key from a cryptographic random number generator, as age does.
 - `sauce` wraps the file key for each reader with the age library, as age does in its header, so classical, post-quantum and plugin keys work as they do in age.
-  For a GPG key, gpg encrypts the file key.
+  For a GPG key, gpg encrypts the file key, with no compression, to the public key in the keyring of the writer.
+  The message is one public-key encrypted session key packet and then one integrity protected encrypted data packet, and a reader refuses any other packets before it runs gpg.
+  The encrypted data holds the 16 bytes of the file key with no literal data packet around them, and a reader takes them with `gpg --unwrap` and refuses any other length, so gpg reads no packet inside the message.
 - HKDF-SHA-256 derives three separate 32-byte outputs from the file key, the key of `value`, the key of `facts` and `commitment`, with the labels `secret-sauce/1/value`, `secret-sauce/1/facts` and `secret-sauce/1/commitment`.
 - `value` and `facts` are each one ChaCha20-Poly1305 message with a nonce of 12 zero bytes.
 
@@ -97,6 +110,7 @@ The zero nonce is safe because a key encrypts one message only.
 age uses a zero nonce the same way when it encrypts the file key in an X25519 stanza.
 
 The associated data of both messages is the format number, `name`, `commitment`, and the `for` and the public key of each reader.
+The public key of a GPG reader is its fingerprint, and no age key has the spelling of a fingerprint, so the associated data needs no mark of the key type.
 So a `.sauce.yaml` file opens only under the name of the secret it was written for.
 A file that you move to another folder still opens, when its secret has the same name.
 A `name` line that is edited by hand, or one more reader, makes the file fail to open.
@@ -132,6 +146,7 @@ Anybody with the repository and no key sees these.
 - `name`, and so which secrets exist.
 - The `for` and the public key of each reader, and so which hosts read which secret.
 - The number and the types of the stanzas, and so whether a reader uses a post-quantum key.
+- The fingerprint of each GPG reader, and the key ID of its encryption subkey in the wrap.
 - The steps of `value` and of `facts`.
 - `commitment`, which changes with each write and shows nothing about the secret.
 

@@ -564,6 +564,129 @@
                 [[ -z $(find example -name '*.new' ! -name api-token.sauce.yaml.new) ]]
                 touch $out
               '';
+          gpg =
+            pkgs.runCommand "sauce-gpg"
+              {
+                nativeBuildInputs = [
+                  self.packages.${pkgs.stdenv.hostPlatform.system}.sauce
+                  pkgs.age
+                  pkgs.jq
+                  pkgs.sops
+                  (pkgs.python3.withPackages (ps: [ ps.cryptography ]))
+                ];
+              }
+              ''
+                export HOME="$TMPDIR/home" GNUPGHOME="$TMPDIR/gnupg"
+                mkdir -p "$HOME"
+                mkdir -m 700 "$GNUPGHOME"
+                # A gpg on PATH that records each run, so the check sees which commands start gpg.
+                # It also records the name of each variable for an age private key that gpg gets, so the check sees none reach it.
+                mkdir bin
+                printf '#!/bin/sh\necho "$*" >> %s\nenv | grep -oE "^(SOPS_AGE_KEY|SOPS_AGE_KEY_FILE|SAUCE_IDENTITY)=" >> %s\nexec %s "$@"\n' "$TMPDIR/runs" "$TMPDIR/keys" ${pkgs.gnupg}/bin/gpg > bin/gpg
+                chmod +x bin/gpg
+                export PATH="$PWD/bin:$PATH"
+
+                gpg --batch --passphrase "" --quick-gen-key "throwaway <throwaway@example.invalid>" ed25519 sign never
+                fingerprint=$(gpg --with-colons --list-keys throwaway | awk -F: '/^fpr/ { print $10; exit }')
+                gpg --batch --passphrase "" --quick-add-key "$fingerprint" cv25519 encr never
+                gpg --batch --passphrase "" --quick-gen-key "other <other@example.invalid>" ed25519 sign never
+                other=$(gpg --with-colons --list-keys other | awk -F: '/^fpr/ { print $10; exit }')
+                gpg --batch --passphrase "" --quick-add-key "$other" cv25519 encr never
+
+                mkdir checkout
+                cp -r ${self}/example checkout/
+                chmod -R u+w checkout
+                cd checkout
+                jq --arg key "$fingerprint" 'map_values(.adminRecipients += [$key])' ${manifests} > gpg.json
+                flags="--manifest gpg.json"
+                admin=example/snakeoil/admin.key
+                file=example/secrets/hedgedoc/db-password.sauce.yaml
+
+                sauce generate $flags
+                grep -x "    pgp: $fingerprint" $file
+                [[ $(grep -rlx "    pgp: $fingerprint" example/secrets | wc -l) -eq $(find example/secrets -name '*.sauce.yaml' | wc -l) ]]
+
+                : > "$TMPDIR/runs"
+                value=$(sauce get hedgedoc/db-password --print $flags --identity $admin)
+                [[ $value =~ ^[A-Za-z0-9]{40,48}$ ]]
+                test ! -s "$TMPDIR/runs"
+
+                [[ $(sauce get hedgedoc/db-password --print $flags) == "$value" ]]
+                grep -- --unwrap "$TMPDIR/runs"
+
+                # sauce import wraps for the GPG reader too, so its file opens with gpg alone.
+                # The sops key comes in SOPS_AGE_KEY, and gpg never gets it.
+                age-keygen -o "$TMPDIR/sops.key" 2> /dev/null
+                printf 'ddclient_token: imported-token\n' > plain.yaml
+                sops encrypt --age "$(age-keygen -y "$TMPDIR/sops.key")" --input-type yaml --output-type yaml plain.yaml > secrets.sops.yaml
+                rm plain.yaml
+                printf '{ "ddclient_token": "ddclient/api-token" }\n' > import.json
+                : > "$TMPDIR/runs"
+                # A dry run of an import starts no gpg, as one of generate does.
+                SOPS_AGE_KEY="$(cat "$TMPDIR/sops.key")" sauce import secrets.sops.yaml import.json --dry-run $flags | grep -x 'import "ddclient_token" as ddclient/api-token'
+                test ! -s "$TMPDIR/runs"
+                test ! -e example/secrets/ddclient/api-token.sauce.yaml
+                SOPS_AGE_KEY="$(cat "$TMPDIR/sops.key")" sauce import secrets.sops.yaml import.json $flags
+                grep -- --encrypt "$TMPDIR/runs"
+                test ! -s "$TMPDIR/keys"
+                grep -x "    pgp: $fingerprint" example/secrets/ddclient/api-token.sauce.yaml
+                [[ $(sauce get ddclient/api-token --print $flags) == imported-token ]]
+
+                printf token | sauce set ddclient/api-token $flags
+                printf other-token | sauce set ddclient/api-token $flags
+                [[ $(sauce get ddclient/api-token --print $flags) == other-token ]]
+                [[ $(sauce get ddclient/api-token --print $flags --identity $admin) == other-token ]]
+
+                : > "$TMPDIR/runs"
+                sauce list $flags 2> stderr
+                grep -F 'are not checked, because no private key of an admin is set' stderr
+                sauce status $flags 2> stderr
+                grep -F 'are not checked, because no private key of an admin is set' stderr
+                SAUCE_IDENTITY=$admin sauce list $flags
+                test ! -s "$TMPDIR/runs"
+
+                python ${self}/tools/sauce-decrypt.py $file $admin --print | grep -x "value: $value"
+
+                # A damaged age wrap stops only its own reader, so the GPG reader still opens the file.
+                # gpg gets neither the identity file nor the key file of sops.
+                # The last character of a 32-byte share in base64 has its low two bits zero, so A and Q are both canonical.
+                python -c 'import sys; from pathlib import Path; p = Path(sys.argv[1]); s = p.read_text(); i = s.index("      - X25519 "); j = s.index("\n", i) - 1; p.write_text(s[:j] + ("A" if s[j] != "A" else "Q") + s[j + 1:])' $file
+                : > "$TMPDIR/runs"
+                [[ $(SAUCE_IDENTITY=$admin SOPS_AGE_KEY_FILE="$TMPDIR/sops.key" sauce get hedgedoc/db-password --print $flags) == "$value" ]]
+                grep -- --unwrap "$TMPDIR/runs"
+                test ! -s "$TMPDIR/keys"
+
+                # A wrap for another local key is refused before gpg uses any private key.
+                hostile=$(head -c 16 /dev/urandom | gpg --no-options --batch --trust-model always --compress-algo none --no-literal --recipient "$other" --encrypt | base64 -w 0 | tr -d =)
+                python -c 'import sys; from pathlib import Path; p = Path(sys.argv[1]); s = p.read_text(); i = s.index("    pgp: " + sys.argv[2]); i = s.index("    wrap: ", i) + len("    wrap: "); j = s.index("\n", i); p.write_text(s[:i] + sys.argv[3] + s[j:])' example/secrets/sso/hedgedoc.sauce.yaml "$fingerprint" "$hostile"
+                : > "$TMPDIR/runs"
+                if sauce get sso/hedgedoc --print $flags 2> stderr; then
+                  exit 1
+                fi
+                grep -F "the wrap is not for one encryption key of $fingerprint" stderr
+                [[ $(grep -- --unwrap "$TMPDIR/runs" | grep -vc -- --list-only) -eq 0 ]]
+
+                # A message for a passphrase inside the encrypted data is refused for its length, and gpg never reads it.
+                hostile=$(head -c 16 /dev/urandom \
+                  | gpg --no-options --batch --pinentry-mode loopback --passphrase hunter2 --compress-algo none --symmetric \
+                  | gpg --no-options --batch --trust-model always --compress-algo none --no-literal --recipient "$fingerprint" --encrypt \
+                  | base64 -w 0 | tr -d =)
+                python -c 'import sys; from pathlib import Path; p = Path(sys.argv[1]); s = p.read_text(); i = s.index("    pgp: " + sys.argv[2]); i = s.index("    wrap: ", i) + len("    wrap: "); j = s.index("\n", i); p.write_text(s[:i] + sys.argv[3] + s[j:])' example/secrets/sso/miniflux.sauce.yaml "$fingerprint" "$hostile"
+                if sauce get sso/miniflux --print $flags 2> stderr; then
+                  exit 1
+                fi
+                grep -F "gpg did not give a file key of 16 bytes" stderr
+
+                # gpg encrypts to the fingerprint of a subkey, but a read never matches it, so a write refuses it.
+                subkey=$(gpg --with-colons --list-keys throwaway | awk -F: '/^sub/ { seen = 1; next } seen && /^fpr/ { print $10; exit }')
+                jq --arg key "$subkey" 'map_values(.adminRecipients += [$key])' ${manifests} > subkey.json
+                if printf token | sauce set ddclient/api-token --manifest subkey.json --identity $admin 2> stderr; then
+                  exit 1
+                fi
+                grep -F "$subkey is not the fingerprint of a primary key" stderr
+                ${pkgs.gnupg}/bin/gpgconf --kill gpg-agent
+                touch $out
+              '';
         }
         // lib.optionalAttrs (pkgs.stdenv.hostPlatform.system == "x86_64-linux") {
           # Without "kvm" in requiredSystemFeatures, a builder with no KVM runs the test on emulation, slowly.

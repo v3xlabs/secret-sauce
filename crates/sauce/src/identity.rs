@@ -1,4 +1,5 @@
 use std::{
+    cell::OnceCell,
     env,
     ffi::OsString,
     fs,
@@ -7,13 +8,22 @@ use std::{
 };
 
 use age::IdentityFile;
-use sauce::format::{self, Facts, Name, Value};
+use sauce::format::{self, Facts, Key, Name, Opener, ReadError, Value};
+
+use crate::gpg::{GpgError, SecretKeys};
 
 /// The file that sops reads when `SOPS_AGE_KEY_FILE` is not set, relative to the home folder.
 const SOPS_KEYS: &str = ".config/sops/age/keys.txt";
 
-/// The private keys of an admin, from one age identity file.
+/// The private keys of an admin: the age keys of one identity file, and the secret keys of gpg for a command that needs the file key.
 pub struct Admin {
+    age: Option<AgeKeys>,
+    /// Listed at the first file that no age key opens, and `None` for a command that never starts gpg.
+    gpg: Option<OnceCell<SecretKeys>>,
+}
+
+/// The age keys of one identity file.
+struct AgeKeys {
     file: PathBuf,
     identities: Vec<Box<dyn age::Identity + Send + Sync>>,
 }
@@ -42,8 +52,19 @@ pub enum IdentityError {
 
 #[derive(Debug, thiserror::Error)]
 pub enum OpenError {
-    #[error("no key in {} is a reader of {name}", file.display())]
-    NotAReader { file: PathBuf, name: Name },
+    #[error("no key in {}{} is a reader of {name}", file.display(), if *gpg { " and no secret key of gpg" } else { "" })]
+    NotAReader {
+        file: PathBuf,
+        name: Name,
+        gpg: bool,
+    },
+    #[error(
+        "{}, and no secret key of gpg is a reader of {name}",
+        IdentityError::Missing
+    )]
+    NoKey { name: Name },
+    #[error("cannot list the secret keys of gpg: {0}")]
+    Gpg(#[from] GpgError),
     #[error("cannot open {name}: {source}")]
     Read {
         name: Name,
@@ -53,12 +74,99 @@ pub enum OpenError {
 }
 
 impl Admin {
-    /// Loads the file of `--identity` or `SAUCE_IDENTITY`, then the files that sops reads, `SOPS_AGE_KEY_FILE` and then `~/.config/sops/age/keys.txt`.
+    /// Loads the age keys, as [`Admin::find_age`] does, and opens with gpg a file that no age key opens.
     pub fn find(identity: Option<&Path>) -> Result<Self, IdentityError> {
+        Ok(Self {
+            age: AgeKeys::find(identity)?,
+            gpg: Some(OnceCell::new()),
+        })
+    }
+
+    /// Loads the age keys, and gives `None` when no age identity file is set. A key that cannot be read stays an error.
+    ///
+    /// It never starts gpg, so it suits a command that opens many files, where a card would ask once for each.
+    pub fn find_age(identity: Option<&Path>) -> Result<Option<Self>, IdentityError> {
+        Ok(AgeKeys::find(identity)?.map(|age| Self {
+            age: Some(age),
+            gpg: None,
+        }))
+    }
+
+    /// Opens a file with the first key of the admin that is one of its readers.
+    pub fn open(&self, text: &str, name: &Name) -> Result<(Value, Facts), OpenError> {
+        self.first_reader(text, name, |opener| format::read(text, name, opener))
+    }
+
+    /// Like [`Admin::open`], and gives the facts only, so the value is never decrypted.
+    pub fn open_facts(&self, text: &str, name: &Name) -> Result<Facts, OpenError> {
+        self.first_reader(text, name, |opener| format::read_facts(text, name, opener))
+    }
+
+    fn first_reader<T>(
+        &self,
+        text: &str,
+        name: &Name,
+        read: impl Fn(Opener<'_>) -> Result<T, ReadError>,
+    ) -> Result<T, OpenError> {
+        let opened = |result: Result<T, ReadError>| {
+            result.map_err(|source| OpenError::Read {
+                name: name.clone(),
+                source,
+            })
+        };
+        // A wrap that fails stops only its own reader, so the search goes on and keeps the first failure.
+        let mut failed = None;
+        for identity in self.age.iter().flat_map(|age| &age.identities) {
+            match read(Opener::Age(identity.as_ref())) {
+                Err(ReadError::NotAReader) => {}
+                Err(error) if is_wrap_failure(&error) => {
+                    failed.get_or_insert(error);
+                }
+                result => return opened(result),
+            }
+        }
+        if let Some(gpg) = self.gpg.as_ref().filter(|_| has_pgp_reader(text)) {
+            let keys = if let Some(keys) = gpg.get() {
+                keys
+            } else {
+                let found = SecretKeys::find()?;
+                gpg.get_or_init(|| found)
+            };
+            let unwrap = |fingerprint: &str, wrap: &[u8]| {
+                keys.unwrap(fingerprint, wrap)
+                    .map(|unwrapped| unwrapped.map_err(io::Error::other))
+            };
+            match read(Opener::Pgp(&unwrap)) {
+                Err(ReadError::NotAReader) => {}
+                Err(error) if is_wrap_failure(&error) => {
+                    failed.get_or_insert(error);
+                }
+                result => return opened(result),
+            }
+        }
+        if let Some(error) = failed {
+            return opened(Err(error));
+        }
+        Err(match &self.age {
+            Some(age) => OpenError::NotAReader {
+                file: age.file.clone(),
+                name: name.clone(),
+                gpg: self.gpg.is_some(),
+            },
+            None => OpenError::NoKey { name: name.clone() },
+        })
+    }
+}
+
+impl AgeKeys {
+    /// Loads the file of `--identity` or `SAUCE_IDENTITY`, then the files that sops reads, `SOPS_AGE_KEY_FILE` and then `~/.config/sops/age/keys.txt`.
+    fn find(identity: Option<&Path>) -> Result<Option<Self>, IdentityError> {
         let file = match identity {
             Some(file) => file.to_owned(),
-            None => sops_file(env::var_os("SOPS_AGE_KEY_FILE"), env::var_os("HOME"))?
-                .ok_or(IdentityError::Missing)?,
+            None => match sops_file(env::var_os("SOPS_AGE_KEY_FILE"), env::var_os("HOME"))? {
+                Some(file) => file,
+                None => return Ok(None),
+            },
         };
         let input = fs::File::open(&file)
             .map(BufReader::new)
@@ -66,7 +174,7 @@ impl Admin {
                 path: file.clone(),
                 source,
             })?;
-        Self::parse(file, input)
+        Self::parse(file, input).map(Some)
     }
 
     fn parse(file: PathBuf, input: impl BufRead) -> Result<Self, IdentityError> {
@@ -85,47 +193,23 @@ impl Admin {
         }
         Ok(Self { file, identities })
     }
+}
 
-    /// Like [`Admin::find`], with `None` when no key is set. A key that cannot be read stays an error.
-    pub fn find_if_set(identity: Option<&Path>) -> Result<Option<Self>, IdentityError> {
-        match Self::find(identity) {
-            Ok(admin) => Ok(Some(admin)),
-            Err(IdentityError::Missing) => Ok(None),
-            Err(error) => Err(error),
-        }
-    }
+/// Whether the file has a GPG reader, so that a file of age readers only never starts gpg.
+fn has_pgp_reader(text: &str) -> bool {
+    format::look(text).is_ok_and(|(_, readers)| {
+        readers
+            .iter()
+            .any(|reader| matches!(reader.key, Key::Pgp(_)))
+    })
+}
 
-    /// Opens a file with the first key of the admin that is one of its readers.
-    pub fn open(&self, text: &str, name: &Name) -> Result<(Value, Facts), OpenError> {
-        self.first_reader(name, |identity| format::read(text, name, identity))
-    }
-
-    /// Like [`Admin::open`], and gives the facts only, so the value is never decrypted.
-    pub fn open_facts(&self, text: &str, name: &Name) -> Result<Facts, OpenError> {
-        self.first_reader(name, |identity| format::read_facts(text, name, identity))
-    }
-
-    fn first_reader<T>(
-        &self,
-        name: &Name,
-        read: impl Fn(&(dyn age::Identity + Send + Sync)) -> Result<T, format::ReadError>,
-    ) -> Result<T, OpenError> {
-        for identity in &self.identities {
-            match read(identity.as_ref()) {
-                Err(format::ReadError::NotAReader) => {}
-                opened => {
-                    return opened.map_err(|source| OpenError::Read {
-                        name: name.clone(),
-                        source,
-                    });
-                }
-            }
-        }
-        Err(OpenError::NotAReader {
-            file: self.file.clone(),
-            name: name.clone(),
-        })
-    }
+/// Whether a read failed at the wrap of one reader, so that another reader can still open the file.
+fn is_wrap_failure(error: &ReadError) -> bool {
+    matches!(
+        error,
+        ReadError::Unwrap(_) | ReadError::Pgp(_) | ReadError::Commitment
+    )
 }
 
 /// `SOPS_AGE_KEY_FILE`, else the default file of sops in `home`, and `None` when that file does not exist.
@@ -152,12 +236,12 @@ fn sops_file(
 mod tests {
     use std::{ffi::OsString, io, path::PathBuf};
 
-    use super::{Admin, IdentityError, sops_file};
+    use super::{AgeKeys, IdentityError, sops_file};
 
     #[test]
     fn identity_file_with_no_key_is_an_error_that_names_the_file() {
         for text in ["", "# created: 2026-11-18\n\n"] {
-            let error = Admin::parse(PathBuf::from("admin.key"), text.as_bytes())
+            let error = AgeKeys::parse(PathBuf::from("admin.key"), text.as_bytes())
                 .err()
                 .expect("a file with no key is refused");
 

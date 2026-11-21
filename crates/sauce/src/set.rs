@@ -6,7 +6,7 @@ use std::{
 use sauce::format::{self, Date, Facts, Name, NameError, Value};
 
 use crate::{
-    generate,
+    generate, gpg,
     identity::{Admin, IdentityError, OpenError},
     make::{Recipe, RecipeError, SET_BOUND},
     manifest::{Machines, RuleError},
@@ -119,7 +119,7 @@ pub fn set(
         formerly: old.map(|(_, old)| old.formerly).unwrap_or_default(),
         revoke,
     };
-    let text = format::write(&name, &value, &facts, bound, &secret.readers)?;
+    let text = format::write(&name, &value, &facts, bound, &secret.readers, gpg::wrap)?;
     generate::save(&path, &text).map_err(|source| SetError::Write {
         path: path.clone(),
         source,

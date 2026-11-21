@@ -87,7 +87,8 @@ pub fn is_sealed_length(length: usize) -> bool {
 
 /// The associated data of `facts` and `value`.
 ///
-/// It is the format number, `name`, `commitment`, then `for` and `age` of each reader, in file order.
+/// It is the format number, `name`, `commitment`, then `for` and the `age` or `pgp` key of each reader, in file order.
+/// An age recipient never has the spelling of a GPG fingerprint, so the field needs no mark of its type.
 /// Each field has its length before it, as 8 bytes, most significant byte first.
 pub fn associated_data<'a>(
     name: &Name,
@@ -105,7 +106,7 @@ pub fn associated_data<'a>(
     field(commitment);
     for reader in readers {
         field(reader.r#for.as_bytes());
-        field(reader.age.as_bytes());
+        field(reader.key.as_str().as_bytes());
     }
     data
 }

@@ -1,10 +1,15 @@
-use age::x25519::Identity;
+use std::cell::Cell;
+
+use age::{secrecy::ExposeSecret as _, x25519::Identity};
+use age_core::format::FileKey;
 use base64::{Engine as _, engine::general_purpose::STANDARD_NO_PAD as BASE64};
 use sauce::format::{
-    Facts, Name, ReadError, Reader, Value, WriteError, look, read, read_facts, write,
+    Facts, Key, Name, Opener, ReadError, Reader, Value, WriteError, look, read, read_facts, write,
 };
 
 const NAME: &str = "kanidm/oauth2/freshrss";
+
+const FINGERPRINT: &str = "0123456789ABCDEF0123456789ABCDEF01234567";
 
 fn name(text: &str) -> Name {
     text.parse().expect("a valid name")
@@ -25,7 +30,7 @@ fn facts(expires: Option<&str>) -> Facts {
 fn reader(host: &str, identity: &Identity) -> Reader {
     Reader {
         r#for: host.to_owned(),
-        age: identity.to_public().to_string(),
+        key: Key::Age(identity.to_public().to_string()),
     }
 }
 
@@ -36,6 +41,7 @@ fn write_for(value: &[u8], bound: usize, facts: &Facts, readers: &[Reader]) -> S
         facts,
         bound,
         readers,
+        |_, _| unreachable!("these files have no GPG reader"),
     )
     .expect("a valid write")
 }
@@ -53,7 +59,7 @@ fn every_reader_opens_the_same_value_and_facts() {
     let readers = [reader("admin", &admin), reader("web", &web)];
     let text = write_for(b"correct horse", 252, &facts, &readers);
     for identity in [&admin, &web] {
-        let (value, opened) = read(&text, &name(NAME), identity).unwrap();
+        let (value, opened) = read(&text, &name(NAME), Opener::Age(identity)).unwrap();
         assert_eq!(value.expose(), b"correct horse");
         assert_eq!(opened, facts);
     }
@@ -68,7 +74,7 @@ fn a_key_that_is_not_a_reader_gets_an_error() {
         &facts(None),
         &[reader("admin", &admin)],
     );
-    let opened = read(&text, &name(NAME), &Identity::generate());
+    let opened = read(&text, &name(NAME), Opener::Age(&Identity::generate()));
     assert!(matches!(opened, Err(ReadError::NotAReader)));
 }
 
@@ -77,7 +83,7 @@ fn a_changed_file_fails_to_open() {
     let (admin, web) = (Identity::generate(), Identity::generate());
     let readers = [reader("admin", &admin), reader("web", &web)];
     let text = write_for(b"correct horse", 252, &facts(None), &readers);
-    let open = |text: &str, expected: &str| read(text, &name(expected), &admin);
+    let open = |text: &str, expected: &str| read(text, &name(expected), Opener::Age(&admin));
 
     let renamed = text.replace(&format!("name: {NAME}\n"), "name: kanidm/other\n");
     assert!(matches!(
@@ -89,7 +95,7 @@ fn a_changed_file_fails_to_open() {
     let stanza = line(&text, "      - ");
     let one_more = format!(
         "{text}  - for: {}\n    age: {}\n    wrap:\n{stanza}\n",
-        stranger.r#for, stranger.age
+        stranger.r#for, stranger.key
     );
     assert!(matches!(open(&one_more, NAME), Err(ReadError::Decrypt)));
 
@@ -140,6 +146,7 @@ fn a_value_longer_than_its_bound_is_refused() {
         &facts(None),
         5,
         &readers,
+        |_, _| unreachable!("the value is refused first"),
     );
     assert!(matches!(written, Err(WriteError::TooLong(5))));
 }
@@ -151,7 +158,10 @@ fn a_sealed_field_opens_at_each_step_and_fails_at_its_line_off_a_step() {
     for bound in [252, 1020, 4092, 8188, 16380, 32764, 65532] {
         let text = write_for(b"token", bound, &facts(None), &readers);
         assert_eq!(
-            read(&text, &name(NAME), &admin).unwrap().0.expose(),
+            read(&text, &name(NAME), Opener::Age(&admin))
+                .unwrap()
+                .0
+                .expose(),
             b"token"
         );
     }
@@ -174,10 +184,13 @@ fn facts_open_when_the_value_does_not() {
     let damaged = text.replace(sealed_value, sealed_facts);
 
     assert!(matches!(
-        read(&damaged, &name(NAME), &admin),
+        read(&damaged, &name(NAME), Opener::Age(&admin)),
         Err(ReadError::Decrypt)
     ));
-    assert_eq!(read_facts(&damaged, &name(NAME), &admin).unwrap(), facts);
+    assert_eq!(
+        read_facts(&damaged, &name(NAME), Opener::Age(&admin)).unwrap(),
+        facts
+    );
 }
 
 #[test]
@@ -185,10 +198,10 @@ fn facts_stay_as_checked_as_the_whole_file() {
     let (admin, web) = (Identity::generate(), Identity::generate());
     let readers = [reader("admin", &admin), reader("web", &web)];
     let text = write_for(b"correct horse", 252, &facts(None), &readers);
-    let open = |text: &str, expected: &str| read_facts(text, &name(expected), &admin);
+    let open = |text: &str, expected: &str| read_facts(text, &name(expected), Opener::Age(&admin));
 
     assert!(matches!(
-        read_facts(&text, &name(NAME), &Identity::generate()),
+        read_facts(&text, &name(NAME), Opener::Age(&Identity::generate())),
         Err(ReadError::NotAReader)
     ));
     assert!(matches!(open(&text, "kanidm/other"), Err(ReadError::Name)));
@@ -213,4 +226,64 @@ fn facts_stay_as_checked_as_the_whole_file() {
         open(&recommitted, NAME),
         Err(ReadError::Commitment)
     ));
+}
+
+#[test]
+fn a_gpg_reader_opens_with_the_file_key_that_its_wrap_holds() {
+    let web = Identity::generate();
+    let gpg = Reader {
+        r#for: "admin".to_owned(),
+        key: Key::Pgp(FINGERPRINT.to_owned()),
+    };
+    let wrapped = Cell::new(None);
+    let text = write(
+        &name(NAME),
+        &Value::from(b"correct horse".to_vec()),
+        &facts(None),
+        252,
+        &[reader("web", &web), gpg.clone()],
+        |fingerprint, file_key| {
+            assert_eq!(fingerprint, FINGERPRINT);
+            wrapped.set(Some(*file_key.expose_secret()));
+            Ok(b"wrap".to_vec())
+        },
+    )
+    .unwrap();
+    let entry = format!("  - for: admin\n    pgp: {FINGERPRINT}\n    wrap: d3JhcA\n");
+    assert!(text.contains(&entry));
+    let twice = format!("{text}{entry}");
+    assert!(matches!(
+        read(&twice, &name(NAME), Opener::Age(&web)),
+        Err(ReadError::Parse(_))
+    ));
+    let file_key = wrapped.get().expect("the GPG reader got a wrap");
+
+    let unwrap = |fingerprint: &str, wrap: &[u8]| {
+        (fingerprint == FINGERPRINT && wrap == b"wrap")
+            .then(|| Ok(FileKey::init_with_mut(|key| *key = file_key)))
+    };
+    let (value, _) = read(&text, &name(NAME), Opener::Pgp(&unwrap)).unwrap();
+    assert_eq!(value.expose(), b"correct horse");
+    let (value, _) = read(&text, &name(NAME), Opener::Age(&web)).unwrap();
+    assert_eq!(value.expose(), b"correct horse");
+
+    let wrong = |_: &str, _: &[u8]| Some(Ok(FileKey::init_with_mut(|key| *key = [0; 16])));
+    assert!(matches!(
+        read(&text, &name(NAME), Opener::Pgp(&wrong)),
+        Err(ReadError::Commitment)
+    ));
+
+    let host = Reader {
+        r#for: "web".to_owned(),
+        ..gpg
+    };
+    let written = write(
+        &name(NAME),
+        &Value::from(b"correct horse".to_vec()),
+        &facts(None),
+        252,
+        &[host],
+        |_, _| unreachable!("a GPG key of a machine is refused first"),
+    );
+    assert!(matches!(written, Err(WriteError::Reader(0))));
 }

@@ -231,7 +231,7 @@ pub fn status(
 ) -> Result<(), StatusError> {
     let secrets = machines.secrets()?;
     let partial = machines.failures().is_some();
-    let admin = Admin::find_if_set(identity)?;
+    let admin = Admin::find_age(identity)?;
     let mut evaluator = Evaluator::new(admin.as_ref(), partial, Date::today());
 
     let mut rows = Vec::new();

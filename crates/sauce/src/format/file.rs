@@ -1,20 +1,31 @@
-use std::{fmt, iter::Peekable, str::Lines};
+use std::{collections::HashSet, fmt, iter::Peekable, str::Lines};
 
 use age_core::format::Stanza;
 use base64::{Engine, engine::general_purpose::STANDARD_NO_PAD as BASE64};
 
-use super::{Name, seal};
+use super::{LARGEST_PGP_WRAP, Name, seal};
 
 /// The longest host name, the length of one DNS label, as `networking.hostName` of NixOS allows.
 const HOST_NAME_BYTES: usize = 63;
+
+/// The characters of a GPG fingerprint in `pgp`: the 20 bytes of a version 4 key in hex, which is the version that gpg 2.4 makes.
+const FINGERPRINT_CHARS: usize = 40;
+
+/// The public key of a reader, from the line `age` or `pgp` of its entry.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Key {
+    /// An age recipient, such as `age1...`.
+    Age(String),
+    /// The fingerprint of a GPG key, in upper case hex.
+    Pgp(String),
+}
 
 /// One reader of a secret, as an entry in `keys` names it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Reader {
     /// `admin`, or the name of a host.
     pub r#for: String,
-    /// The age recipient of the reader, such as `age1...`.
-    pub age: String,
+    pub key: Key,
 }
 
 /// A text that is not a `.sauce.yaml` file.
@@ -35,7 +46,15 @@ pub struct File {
 
 pub struct Entry {
     pub reader: Reader,
-    pub wrap: Vec<Stanza>,
+    pub wrap: Wrap,
+}
+
+/// The file key, wrapped for one reader.
+pub enum Wrap {
+    /// The stanzas that the age library gives for the recipient.
+    Age(Vec<Stanza>),
+    /// The message that gpg wrote for the fingerprint.
+    Pgp(Vec<u8>),
 }
 
 struct Cursor<'a> {
@@ -60,19 +79,40 @@ impl File {
         let value = lines.check(value)?;
         lines.line("keys:")?;
         let mut entries = Vec::new();
+        let mut fingerprints = HashSet::new();
         while let Some(host) = lines.next_if("  - for: ") {
-            let reader = Reader {
-                r#for: host.to_owned(),
-                age: lines.next("    age: ")?.to_owned(),
+            let entry = if let Some(age) = lines.next_if("    age: ") {
+                let reader = Reader {
+                    r#for: host.to_owned(),
+                    key: Key::Age(age.to_owned()),
+                };
+                lines.check(is_valid(&reader).then_some(()))?;
+                lines.line("    wrap:")?;
+                let mut wrap = Vec::new();
+                while let Some(stanza) = lines.next_if("      - ") {
+                    wrap.push(lines.check(parse_stanza(stanza))?);
+                }
+                lines.check((!wrap.is_empty()).then_some(()))?;
+                Entry {
+                    reader,
+                    wrap: Wrap::Age(wrap),
+                }
+            } else {
+                let fingerprint = lines.next("    pgp: ")?;
+                let reader = Reader {
+                    r#for: host.to_owned(),
+                    key: Key::Pgp(fingerprint.to_owned()),
+                };
+                // One entry for each fingerprint, so that gpg gets at most one try for a key in each file.
+                let unique = fingerprints.insert(fingerprint);
+                lines.check((is_valid(&reader) && unique).then_some(()))?;
+                let wrap = pgp_wrap(lines.next("    wrap: ")?);
+                Entry {
+                    reader,
+                    wrap: Wrap::Pgp(lines.check(wrap)?),
+                }
             };
-            lines.check(is_valid(&reader).then_some(()))?;
-            lines.line("    wrap:")?;
-            let mut wrap = Vec::new();
-            while let Some(stanza) = lines.next_if("      - ") {
-                wrap.push(lines.check(parse_stanza(stanza))?);
-            }
-            lines.check((!wrap.is_empty()).then_some(()))?;
-            entries.push(Entry { reader, wrap });
+            entries.push(entry);
         }
         lines.check((!entries.is_empty()).then_some(()))?;
         let file = Self {
@@ -106,14 +146,22 @@ impl fmt::Display for File {
         writeln!(f, "keys:")?;
         for entry in &self.entries {
             writeln!(f, "  - for: {}", entry.reader.r#for)?;
-            writeln!(f, "    age: {}", entry.reader.age)?;
-            writeln!(f, "    wrap:")?;
-            for stanza in &entry.wrap {
-                write!(f, "      - {}", stanza.tag)?;
-                for arg in &stanza.args {
-                    write!(f, " {arg}")?;
+            match &entry.reader.key {
+                Key::Age(age) => writeln!(f, "    age: {age}")?,
+                Key::Pgp(fingerprint) => writeln!(f, "    pgp: {fingerprint}")?,
+            }
+            match &entry.wrap {
+                Wrap::Age(stanzas) => {
+                    writeln!(f, "    wrap:")?;
+                    for stanza in stanzas {
+                        write!(f, "      - {}", stanza.tag)?;
+                        for arg in &stanza.args {
+                            write!(f, " {arg}")?;
+                        }
+                        writeln!(f, " {}", BASE64.encode(&stanza.body))?;
+                    }
                 }
-                writeln!(f, " {}", BASE64.encode(&stanza.body))?;
+                Wrap::Pgp(message) => writeln!(f, "    wrap: {}", BASE64.encode(message))?,
             }
         }
         Ok(())
@@ -143,15 +191,53 @@ impl<'a> Cursor<'a> {
     }
 }
 
+impl Key {
+    /// The age recipient or the fingerprint, as the line of the entry spells it.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Age(key) | Self::Pgp(key) => key,
+        }
+    }
+}
+
+/// A GPG fingerprint for its spelling, and an age recipient for anything else, which [`is_valid`] then checks.
+impl From<String> for Key {
+    fn from(key: String) -> Self {
+        if is_fingerprint(&key) {
+            Self::Pgp(key)
+        } else {
+            Self::Age(key)
+        }
+    }
+}
+
+impl fmt::Display for Key {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 fn base64(text: &str) -> Option<Vec<u8>> {
     BASE64.decode(text).ok()
 }
 
+/// The bytes that a text in base64 with no padding decodes to.
+fn decoded_length(text: &str) -> usize {
+    // 4 characters per 3 bytes, and a last group of 2 or 3 characters for 1 or 2 bytes.
+    text.len() / 4 * 3 + (text.len() % 4).saturating_sub(1)
+}
+
 /// Decodes `facts` or `value`, and refuses a length that no step gives before it decodes anything.
 fn sealed(text: &str) -> Option<Vec<u8>> {
-    // Base64 with no padding: 4 characters per 3 bytes, and a last group of 2 or 3 characters for 1 or 2 bytes.
-    let length = text.len() / 4 * 3 + (text.len() % 4).saturating_sub(1);
-    seal::is_sealed_length(length).then(|| base64(text))?
+    seal::is_sealed_length(decoded_length(text)).then(|| base64(text))?
+}
+
+/// Decodes the wrap of a GPG reader, and refuses an empty one or one larger than the largest before it decodes anything.
+fn pgp_wrap(text: &str) -> Option<Vec<u8>> {
+    (1..=LARGEST_PGP_WRAP)
+        .contains(&decoded_length(text))
+        .then(|| base64(text))?
 }
 
 /// Parses an age stanza as one line: the type, each argument and the body in base64, with single spaces.
@@ -176,17 +262,32 @@ fn parse_stanza(line: &str) -> Option<Stanza> {
     })
 }
 
-/// Whether `for` and `age` of a reader can stand in a file.
+/// Whether `for` and the key of a reader can stand in a file.
+///
+/// A GPG key reads only for `admin`, because a machine reads with its age key.
 pub fn is_valid(reader: &Reader) -> bool {
     let alnum = u8::is_ascii_alphanumeric;
     let host = reader.r#for.as_bytes();
-    let age = reader.age.strip_prefix("age1").unwrap_or_default();
+    let key = match &reader.key {
+        Key::Age(age) => {
+            let age = age.strip_prefix("age1").unwrap_or_default();
+            !age.is_empty()
+                && age
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+        }
+        Key::Pgp(fingerprint) => reader.r#for == "admin" && is_fingerprint(fingerprint),
+    };
     (1..=HOST_NAME_BYTES).contains(&host.len())
         && host.first().is_some_and(alnum)
         && host.last().is_some_and(alnum)
         && host.iter().all(|byte| alnum(byte) || b"_-".contains(byte))
-        && !age.is_empty()
-        && age
+        && key
+}
+
+fn is_fingerprint(key: &str) -> bool {
+    key.len() == FINGERPRINT_CHARS
+        && key
             .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+            .all(|byte| byte.is_ascii_digit() || (b'A'..=b'F').contains(&byte))
 }

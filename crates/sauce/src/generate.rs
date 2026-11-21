@@ -9,6 +9,7 @@ use sauce::format::{self, Date, Facts, Name, Reader};
 
 use crate::{
     color::{Color, Palette},
+    gpg,
     identity::{Admin, IdentityError, OpenError},
     make::{Recipe, RecipeError, SET_BOUND},
     manifest::{Machines, RuleError, Secret},
@@ -174,11 +175,18 @@ fn apply(
             formerly: Vec::new(),
             revoke: false,
         };
-        let text = format::write(name, &made.value, &facts, recipe.bound(), &secret.readers)
-            .map_err(|source| GenerateError::Encrypt {
-                name: name.clone(),
-                source: Box::new(source),
-            })?;
+        let text = format::write(
+            name,
+            &made.value,
+            &facts,
+            recipe.bound(),
+            &secret.readers,
+            gpg::wrap,
+        )
+        .map_err(|source| GenerateError::Encrypt {
+            name: name.clone(),
+            source: Box::new(source),
+        })?;
         created.push((name, path, text, made.public));
     }
     let mut reencrypted = Vec::with_capacity(changes.len());
@@ -187,11 +195,18 @@ fn apply(
         for change in changes {
             let (value, mut facts) = admin.open(&change.text, change.name)?;
             facts.revoke |= !change.lost.is_empty();
-            let text = format::write(change.name, &value, &facts, change.bound, change.readers)
-                .map_err(|source| GenerateError::Encrypt {
-                    name: change.name.clone(),
-                    source: Box::new(source),
-                })?;
+            let text = format::write(
+                change.name,
+                &value,
+                &facts,
+                change.bound,
+                change.readers,
+                gpg::wrap,
+            )
+            .map_err(|source| GenerateError::Encrypt {
+                name: change.name.clone(),
+                source: Box::new(source),
+            })?;
             reencrypted.push((change.name, change.path, text));
         }
     }
@@ -293,14 +308,14 @@ fn confirm(changes: &[Change<'_>], pending: usize) -> io::Result<bool> {
             writeln!(
                 stderr,
                 "  {}  gets {} {}",
-                change.name, reader.r#for, reader.age
+                change.name, reader.r#for, reader.key
             )?;
         }
         for reader in &change.lost {
             writeln!(
                 stderr,
                 "  {}  loses {} {}",
-                change.name, reader.r#for, reader.age
+                change.name, reader.r#for, reader.key
             )?;
         }
     }

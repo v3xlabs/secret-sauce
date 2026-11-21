@@ -6,7 +6,7 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use age::x25519;
-use sauce::format::{self, Name, NameError, ReadError};
+use sauce::format::{self, Name, NameError, Opener, ReadError};
 use serde::Deserialize;
 use zeroize::Zeroizing;
 
@@ -345,7 +345,7 @@ fn open(secret: &Secret, identity: &x25519::Identity) -> Result<Zeroizing<Vec<u8
         .ok_or_else(|| Error::NoFile(name.clone()))?;
     let text = format::load(file).map_err(io_error("cannot read", file))?;
     let (value, _facts) =
-        format::read(&text, &expected, identity).map_err(|source| Error::Open {
+        format::read(&text, &expected, Opener::Age(identity)).map_err(|source| Error::Open {
             name: name.clone(),
             source,
         })?;

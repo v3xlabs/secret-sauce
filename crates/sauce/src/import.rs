@@ -16,7 +16,7 @@ use serde::de::{Deserialize, Deserializer, MapAccess, Visitor};
 use zeroize::Zeroizing;
 
 use crate::{
-    generate,
+    generate, gpg,
     make::{Recipe, SET_BOUND},
     manifest::{Machines, RuleError, Secret},
 };
@@ -97,6 +97,8 @@ enum Step<'a> {
         path: PathBuf,
         text: String,
     },
+    /// In a dry run, a secret that sauce would import, whose readers are checked and not wrapped for.
+    Preview { key: &'a str, name: &'a Name },
     /// The secret has a `.sauce.yaml` file, which sauce never overwrites.
     Skip { key: &'a str, name: &'a Name },
     /// Why the key cannot be imported.
@@ -177,7 +179,7 @@ pub fn import(
                 Some((name, _)) if !names.insert(name) => {
                     Step::Refuse(format!("{key:?}: an earlier sops key also maps to {name}"))
                 }
-                Some((name, secret)) => step(key, name, secret, root, &mut values),
+                Some((name, secret)) => step(key, name, secret, root, &mut values, dry_run),
             }
         } else {
             Step::Refuse(format!("{key:?}: the mapping names this sops key twice"))
@@ -191,7 +193,7 @@ pub fn import(
         .iter()
         .filter_map(|step| match step {
             Step::Refuse(reason) => Some(reason),
-            Step::Import { .. } | Step::Skip { .. } => None,
+            Step::Import { .. } | Step::Preview { .. } | Step::Skip { .. } => None,
         })
         .collect();
     if !refused.is_empty() {
@@ -213,7 +215,7 @@ fn publish(steps: Vec<Step<'_>>, dry_run: bool) -> Result<(), ImportError> {
             Step::Skip { key, name } => format!(
                 "skip {key:?}: {name} has a .sauce.yaml file, which sauce keeps, and sauce did not compare the values"
             ),
-            Step::Import { key, name, .. } if dry_run => format!("import {key:?} as {name}"),
+            Step::Preview { key, name } => format!("import {key:?} as {name}"),
             Step::Import {
                 key, name, path, ..
             } => {
@@ -296,12 +298,14 @@ fn stage(steps: &[Step<'_>]) -> Result<Vec<PathBuf>, ImportError> {
 /// What to do with one mapped key whose secret a machine declares.
 ///
 /// The value moves out of `values`, so its bytes are not copied, and it is encrypted here, so that a key that cannot be written stops the import before any write.
+/// A dry run checks the readers and wraps for none of them, so it starts no gpg.
 fn step<'a>(
     key: &'a str,
     name: &'a Name,
     secret: &Secret<'_>,
     root: &Path,
     values: &mut [(String, serde_json::Value)],
+    dry_run: bool,
 ) -> Step<'a> {
     let mut found = values.iter_mut().filter(|(other, _)| other == key);
     let value = match (found.next(), found.next()) {
@@ -378,6 +382,12 @@ fn step<'a>(
             return Step::Refuse(format!("{key:?}: cannot read {}: {error}", path.display()));
         }
     }
+    if dry_run {
+        return match format::validate_readers(&secret.readers) {
+            Ok(()) => Step::Preview { key, name },
+            Err(error) => Step::Refuse(format!("{key:?}: cannot encrypt {name}: {error}")),
+        };
+    }
     let facts = Facts {
         version: 1,
         set: Date::today(),
@@ -387,7 +397,7 @@ fn step<'a>(
         formerly: Vec::new(),
         revoke: false,
     };
-    match format::write(name, &value, &facts, bound, &secret.readers) {
+    match format::write(name, &value, &facts, bound, &secret.readers, gpg::wrap) {
         Ok(text) => Step::Import {
             key,
             name,

@@ -229,6 +229,15 @@ You should never depend on `sauce` alone to get your secrets back.
 Each host has a key of its own, and you have one or more for yourself.
 Hardware keys work through age plugins.
 
+A GPG key reads as an admin, never as a host, and you list its fingerprint in `sauce.adminRecipients` next to your age keys.
+`sauce` runs the `gpg` program on your PATH for it, so a key on a smartcard or a YubiKey works through gpg-agent and its pinentry.
+`sauce` gives gpg the wrap on a pipe, so a pinentry on the terminal needs `GPG_TTY`, as it does for sops, and a graphical pinentry needs nothing.
+Every write wraps a new file key for each reader, so each `sauce generate`, `sauce set`, `sauce edit` and `sauce rotate` needs `gpg` and the public key of each GPG reader in the keyring of whoever writes.
+To open a file, `sauce` tries your age keys first, and runs gpg only when none of them is a reader and the command needs the file key.
+`sauce list` and `sauce status` never run gpg.
+A card costs one operation for each file that `sauce` opens with it, so with a touch policy it asks for one touch per file.
+Hosts never need gpg, because they read with their age keys.
+
 Post-quantum age keys work the same way.
 Moving to them later is a re-encrypt, not a new file format.
 One rule applies: the age readers of a single secret move together, because age does not allow post-quantum and classical keys on the same file.
@@ -288,6 +297,8 @@ Between the two deploys they disagree.
 
 A post-quantum secret with a GPG reader is only as strong as the GPG key.
 `sauce status` points those out.
+
+gpg refuses to encrypt to an expired key, so every write of a secret with that GPG reader stops when the key expires, until you extend the key or remove its fingerprint.
 
 A service that owns a secret can make its file larger until the 16 MiB are full, and then the next activation fails and the current secrets stay.
 

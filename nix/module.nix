@@ -279,7 +279,7 @@ in
 
     adminRecipients = mkOption {
       type = types.nonEmptyListOf types.str;
-      description = "Your own public keys.";
+      description = "Your own public keys: age recipients, and the fingerprints of GPG keys as 40 upper case hex characters.";
     };
 
     identityFile = mkOption {

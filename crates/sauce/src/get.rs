@@ -138,14 +138,15 @@ pub fn get(
         )?;
     }
 
-    let Some(admin) = Admin::find_if_set(identity)? else {
-        writeln!(
-            out,
-            "\nFacts are locked. Run `sauce get {name} --identity <admin-key-file>`."
-        )?;
-        return Ok(());
+    let facts = match Admin::find(identity)?.open_facts(&text, &name) {
+        Err(OpenError::NoKey { .. }) => {
+            return Ok(writeln!(
+                out,
+                "\nFacts are locked. Run `sauce get {name} --identity <admin-key-file>`."
+            )?);
+        }
+        facts => facts?,
     };
-    let facts = admin.open_facts(&text, &name)?;
     writeln!(out, "version: {}", facts.version)?;
     writeln!(out, "set: {}", facts.set)?;
     for (label, date) in [("issued", facts.issued), ("expires", facts.expires)] {

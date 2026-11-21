@@ -7,7 +7,7 @@ use std::{
 use sauce::format::{self, Date, Facts, Name, NameError};
 
 use crate::{
-    generate,
+    generate, gpg,
     identity::{Admin, IdentityError, OpenError},
     make::{Recipe, RecipeError},
     manifest::{Machines, RuleError, Secret},
@@ -149,6 +149,7 @@ pub fn rotate(
             &facts,
             rotation.recipe.bound(),
             &rotation.secret.readers,
+            gpg::wrap,
         )
         .map_err(|source| RotateError::Encrypt {
             name: rotation.name.clone(),

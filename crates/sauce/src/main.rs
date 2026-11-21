@@ -3,6 +3,7 @@ mod color;
 mod edit;
 mod generate;
 mod get;
+mod gpg;
 mod identity;
 mod import;
 mod make;
@@ -196,7 +197,7 @@ fn list(
     identity: Option<&Path>,
 ) -> Result<(), Box<dyn Error>> {
     let secrets = machines.secrets()?;
-    let admin = Admin::find_if_set(identity)?;
+    let admin = Admin::find_age(identity)?;
     let today = Date::today();
     let mut evaluator = Evaluator::new(admin.as_ref(), machines.failures().is_some(), today);
     let mut rows = Vec::new();

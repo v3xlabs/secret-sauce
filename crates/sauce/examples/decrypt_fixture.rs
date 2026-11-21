@@ -1,7 +1,7 @@
 use std::{env, fs};
 
 use age::x25519::Identity;
-use sauce::format::{Facts, Reader, Value, write};
+use sauce::format::{Facts, Key, Reader, Value, write};
 
 fn main() {
     let key = fs::read_to_string(env::args().nth(1).expect("a key file path"))
@@ -29,13 +29,19 @@ fn main() {
         &[
             Reader {
                 r#for: "admin".to_owned(),
-                age: identity.to_public().to_string(),
+                key: Key::Age(identity.to_public().to_string()),
+            },
+            // The second decrypt program skips a GPG reader, but binds its fingerprint as `sauce` does.
+            Reader {
+                r#for: "admin".to_owned(),
+                key: Key::Pgp("0123456789ABCDEF0123456789ABCDEF01234567".to_owned()),
             },
             Reader {
                 r#for: "backup".to_owned(),
-                age: identity.to_public().to_string(),
+                key: Key::Age(identity.to_public().to_string()),
             },
         ],
+        |_, _| Ok(vec![0xc1, 1, 0, 0xd2, 1, 0]),
     )
     .expect("a valid file");
     print!("{text}");

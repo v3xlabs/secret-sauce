@@ -21,6 +21,7 @@ NONCE = bytes(12)
 STEPS = (256, 1024, 4096, 8192, 16384, 32768, 65536)
 TAG_BYTES = 16
 LARGEST_FILE = 1024 * 1024
+LARGEST_PGP_WRAP = 4096
 
 
 def decode64(text):
@@ -92,14 +93,31 @@ def parse_file(text):
     if len(commitment) != 32 or field("keys:"):
         raise ValueError("invalid commitment or keys")
     entries = []
+    fingerprints = set()
     line = next(lines, None)
     while line is not None:
         if not line.startswith("  - for: "):
             raise ValueError("invalid reader")
         host = line[len("  - for: "):]
-        public = field("    age: ")
         if not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9_-]{0,61}[A-Za-z0-9])?", host):
             raise ValueError("invalid reader name")
+        line = next(lines)
+        if line.startswith("    pgp: "):
+            # This program has no GPG key, so it binds the fingerprint and skips the wrap.
+            public = line[len("    pgp: "):]
+            if host != "admin" or not re.fullmatch(r"[0-9A-F]{40}", public):
+                raise ValueError("invalid GPG reader")
+            if public in fingerprints:
+                raise ValueError("repeated GPG reader")
+            fingerprints.add(public)
+            if not 1 <= len(decode64(field("    wrap: "))) <= LARGEST_PGP_WRAP:
+                raise ValueError("invalid GPG wrap")
+            entries.append((host, public, []))
+            line = next(lines, None)
+            continue
+        if not line.startswith("    age: "):
+            raise ValueError("invalid reader key")
+        public = line[len("    age: "):]
         if not re.fullmatch(r"age1[a-z0-9]+", public) or field("    wrap:"):
             raise ValueError("invalid reader key")
         stanzas = []

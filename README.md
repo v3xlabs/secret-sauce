@@ -23,9 +23,16 @@ It makes the values, pads them, and encrypts each one for the hosts that use it 
 None of this is built yet.
 The design is in [`spec/`](spec/).
 
+## Running sauce
+
+Run the `sauce` of the flake input that your hosts use, so that it writes files that their `sauce-install` reads.
+For an input named `sauce`, that is `nix run --inputs-from . sauce -- generate` in your flake.
+A `sauce` of a newer version can write a file that an older `sauce-install` refuses, and then the activation of that host fails.
+
 ## Independent decryption
 
 Run `python tools/sauce-decrypt.py secret.sauce.yaml identity.key --name secret/name` to open a file with an age X25519 identity.
 The program prints the facts and the value length.
 Add `--print` to print the value instead of its length.
 The development shell provides Python and `cryptography`.
+The program has no GPG support: it skips the wrap of a GPG reader, so it opens a file with an age identity only.

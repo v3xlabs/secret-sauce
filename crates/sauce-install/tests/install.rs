@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use age::x25519::Identity;
-use sauce::format::{Facts, Reader, Value, write};
+use sauce::format::{Facts, Key, Reader, Value, write};
 
 const NAME: &str = "app/password";
 
@@ -48,14 +48,20 @@ fn seal(dir: &Path, machine: &str, name: &str, value: &str) -> PathBuf {
     };
     let reader = Reader {
         r#for: machine.to_owned(),
-        age: identity.to_public().to_string(),
+        key: Key::Age(identity.to_public().to_string()),
+    };
+    // A GPG reader as an admin has, so that every test proves a machine skips its entry without gpg.
+    let admin = Reader {
+        r#for: "admin".to_owned(),
+        key: Key::Pgp("0123456789ABCDEF0123456789ABCDEF01234567".to_owned()),
     };
     let text = write(
         &name.parse().expect("a valid name"),
         &Value::from(value.as_bytes().to_vec()),
         &facts,
         252,
-        &[reader],
+        &[reader, admin],
+        |_, _| Ok(vec![0xc1, 1, 0, 0xd2, 1, 0]),
     )
     .expect("a valid write");
     let file = dir.join(format!("{machine}-{}.sauce.yaml", name.replace('/', "-")));

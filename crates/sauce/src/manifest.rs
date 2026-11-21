@@ -7,7 +7,7 @@ use std::{
     thread,
 };
 
-use sauce::format::{self, Name, Reader};
+use sauce::format::{self, Key, Name, Reader};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
@@ -402,10 +402,10 @@ impl Machines {
             secret.machines.sort_unstable();
             secret.machines.dedup();
             for machine in &secret.machines {
-                for age in &self.0[*machine].admin_recipients {
+                for key in &self.0[*machine].admin_recipients {
                     let admin = Reader {
                         r#for: String::from("admin"),
-                        age: age.clone(),
+                        key: Key::from(key.clone()),
                     };
                     if !secret.readers.contains(&admin) {
                         secret.readers.push(admin);
@@ -415,7 +415,7 @@ impl Machines {
             for machine in &secret.machines {
                 secret.readers.push(Reader {
                     r#for: (*machine).to_owned(),
-                    age: self.0[*machine].recipient.clone(),
+                    key: Key::Age(self.0[*machine].recipient.clone()),
                 });
             }
         }

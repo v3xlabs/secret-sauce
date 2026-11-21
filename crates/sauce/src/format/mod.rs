@@ -7,7 +7,7 @@ mod seal;
 mod value;
 
 pub use facts::{Date, DateError, Facts};
-pub use file::{ParseError, Reader};
+pub use file::{Key, ParseError, Reader};
 pub use name::{Name, NameError};
 pub use value::Value;
 
@@ -17,12 +17,30 @@ use std::path::Path;
 
 use age::Recipient as _;
 use age_core::format::FileKey;
-use file::{Entry, File};
+use file::{Entry, File, Wrap};
 use rand::{RngCore, rngs::OsRng};
 use seal::Keys;
 
 /// The largest `.sauce.yaml` file, in bytes, as `spec/format.md` says.
 const LARGEST_FILE: usize = 1024 * 1024;
+
+/// The largest wrap of a GPG reader, in bytes.
+///
+/// A wrap for an RSA key of 4096 bits is 601 bytes, and one for 8192 bits, the largest RSA key that gpg makes, is about 1100.
+/// A larger wrap is refused before gpg reads it.
+pub const LARGEST_PGP_WRAP: usize = 4096;
+
+/// Unwraps the file key from the wrap of a GPG reader, given its fingerprint, and gives `None` for a key it does not hold.
+pub type PgpUnwrap<'a> = dyn Fn(&str, &[u8]) -> Option<io::Result<FileKey>> + 'a;
+
+/// The private key that opens a file.
+#[derive(Clone, Copy)]
+pub enum Opener<'a> {
+    /// An age identity, which skips the entries of GPG keys.
+    Age(&'a dyn age::Identity),
+    /// The secret keys of gpg, which skip the entries of age keys.
+    Pgp(&'a PgpUnwrap<'a>),
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum WriteError {
@@ -35,7 +53,7 @@ pub enum WriteError {
     #[error("a file needs at least one reader")]
     NoReaders,
     #[error(
-        "reader {0} does not have `admin` or a host name in `for` and an age X25519 recipient in `age`"
+        "reader {0} does not have `admin` or a host name in `for` and an age X25519 recipient in `age`, or `admin` in `for` and a GPG fingerprint of 40 upper case hex characters in `pgp` that no earlier reader has"
     )]
     Reader(usize),
     #[error(
@@ -44,6 +62,14 @@ pub enum WriteError {
     TooLarge,
     #[error("age cannot wrap the file key")]
     Wrap(#[from] age::EncryptError),
+    #[error("gpg cannot wrap the file key for {fingerprint}: {source}")]
+    Pgp {
+        fingerprint: String,
+        #[source]
+        source: io::Error,
+    },
+    #[error("the wrap for {0} is empty or larger than {LARGEST_PGP_WRAP} bytes")]
+    PgpWrap(String),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -56,6 +82,8 @@ pub enum ReadError {
     NotAReader,
     #[error("age cannot unwrap the file key")]
     Unwrap(#[source] age::DecryptError),
+    #[error("gpg cannot unwrap the file key: {0}")]
+    Pgp(#[source] io::Error),
     #[error("the file key does not match `commitment`")]
     Commitment,
     #[error("`facts` or `value` does not decrypt, so the file changed after it was written")]
@@ -69,12 +97,14 @@ pub enum ReadError {
 /// Writes the text of a file for these readers, with public keys only.
 ///
 /// `bound` is the longest value in bytes that the declaration of the secret allows, and it chooses the step of `value`.
+/// `pgp` wraps the file key for the fingerprint of each GPG reader, and only for those.
 pub fn write(
     name: &Name,
     value: &Value,
     facts: &Facts,
     bound: usize,
     readers: &[Reader],
+    mut pgp: impl FnMut(&str, &FileKey) -> io::Result<Vec<u8>>,
 ) -> Result<String, WriteError> {
     let value_step = seal::step(bound).ok_or(WriteError::Bound(bound))?;
     if value.expose().len() > bound {
@@ -86,17 +116,26 @@ pub fn write(
     let file_key = FileKey::init_with_mut(|key| OsRng.fill_bytes(key));
     let keys = Keys::new(&file_key);
     let associated_data = seal::associated_data(name, &keys.commitment, readers);
-    let entries = readers
-        .iter()
-        .zip(&recipients)
-        .map(|(reader, recipient)| {
-            let (wrap, _labels) = recipient.wrap_file_key(&file_key)?;
-            Ok(Entry {
-                reader: reader.clone(),
-                wrap,
-            })
-        })
-        .collect::<Result<_, WriteError>>()?;
+    let mut entries = Vec::with_capacity(readers.len());
+    for (reader, recipient) in readers.iter().zip(&recipients) {
+        let wrap = if let Some(recipient) = recipient {
+            Wrap::Age(recipient.wrap_file_key(&file_key)?.0)
+        } else {
+            let fingerprint = reader.key.as_str();
+            let wrap = pgp(fingerprint, &file_key).map_err(|source| WriteError::Pgp {
+                fingerprint: fingerprint.to_owned(),
+                source,
+            })?;
+            if !(1..=LARGEST_PGP_WRAP).contains(&wrap.len()) {
+                return Err(WriteError::PgpWrap(fingerprint.to_owned()));
+            }
+            Wrap::Pgp(wrap)
+        };
+        entries.push(Entry {
+            reader: reader.clone(),
+            wrap,
+        });
+    }
     let facts = seal::pad(facts::print(facts).as_bytes(), facts_step);
     let value = seal::pad(value.expose(), value_step);
     let file = File {
@@ -117,14 +156,18 @@ pub fn validate_readers(readers: &[Reader]) -> Result<(), WriteError> {
     checked_recipients(readers)?.try_for_each(|recipient| recipient.map(drop))
 }
 
+/// Gives the age recipient of each reader, and `None` for a GPG reader, which `pgp` of [`write`] wraps for.
 fn checked_recipients(
     readers: &[Reader],
-) -> Result<impl Iterator<Item = Result<age::x25519::Recipient, WriteError>>, WriteError> {
+) -> Result<impl Iterator<Item = Result<Option<age::x25519::Recipient>, WriteError>>, WriteError> {
     if readers.is_empty() {
         return Err(WriteError::NoReaders);
     }
     Ok(readers.iter().enumerate().map(|(index, reader)| {
-        let recipient = reader.age.parse::<age::x25519::Recipient>().ok();
+        let recipient = match &reader.key {
+            Key::Age(age) => age.parse::<age::x25519::Recipient>().ok().map(Some),
+            Key::Pgp(_) => (!readers[..index].contains(reader)).then_some(None),
+        };
         recipient
             .filter(|_| file::is_valid(reader))
             .ok_or(WriteError::Reader(index))
@@ -155,15 +198,11 @@ pub fn load(path: &Path) -> io::Result<String> {
     String::from_utf8(bytes).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
-/// Opens a file with one age identity and gives its value and its facts.
+/// Opens a file with one private key and gives its value and its facts.
 ///
 /// `name` is the name of the secret that the caller expects in this file.
-pub fn read<I: age::Identity + ?Sized>(
-    text: &str,
-    name: &Name,
-    identity: &I,
-) -> Result<(Value, Facts), ReadError> {
-    let (file, keys) = unlock(text, name, identity)?;
+pub fn read(text: &str, name: &Name, opener: Opener<'_>) -> Result<(Value, Facts), ReadError> {
+    let (file, keys) = unlock(text, name, opener)?;
     let associated_data = associated_data(&file);
     let facts = seal::open(&keys.facts, &associated_data, &file.facts).ok_or(ReadError::Decrypt)?;
     let value = seal::open(&keys.value, &associated_data, &file.value).ok_or(ReadError::Decrypt)?;
@@ -173,27 +212,19 @@ pub fn read<I: age::Identity + ?Sized>(
     Ok((Value::from(value.to_vec()), facts))
 }
 
-/// Opens a file with one age identity and gives its facts only.
+/// Opens a file with one private key and gives its facts only.
 ///
 /// The value is never decrypted, so a file whose `value` does not open still gives its facts.
 /// `name` is the name of the secret that the caller expects in this file.
-pub fn read_facts<I: age::Identity + ?Sized>(
-    text: &str,
-    name: &Name,
-    identity: &I,
-) -> Result<Facts, ReadError> {
-    let (file, keys) = unlock(text, name, identity)?;
+pub fn read_facts(text: &str, name: &Name, opener: Opener<'_>) -> Result<Facts, ReadError> {
+    let (file, keys) = unlock(text, name, opener)?;
     let facts =
         seal::open(&keys.facts, &associated_data(&file), &file.facts).ok_or(ReadError::Decrypt)?;
     parse_facts(seal::unpad(&facts).ok_or(ReadError::Padding)?)
 }
 
-/// Parses a file, checks its name, and finds the keys that the identity unwraps.
-fn unlock<I: age::Identity + ?Sized>(
-    text: &str,
-    name: &Name,
-    identity: &I,
-) -> Result<(File, Keys), ReadError> {
+/// Parses a file, checks its name, and finds the keys that the private key unwraps.
+fn unlock(text: &str, name: &Name, opener: Opener<'_>) -> Result<(File, Keys), ReadError> {
     let file = File::parse(text)?;
     if file.name != *name {
         return Err(ReadError::Name);
@@ -201,11 +232,19 @@ fn unlock<I: age::Identity + ?Sized>(
     // A damaged wrap must stop only its own reader, so the search goes on after a failure.
     let mut keys = Err(ReadError::NotAReader);
     for entry in &file.entries {
-        match identity.unwrap_stanzas(&entry.wrap) {
+        let unwrapped = match (opener, &entry.wrap) {
+            (Opener::Age(identity), Wrap::Age(stanzas)) => identity
+                .unwrap_stanzas(stanzas)
+                .map(|unwrapped| unwrapped.map_err(ReadError::Unwrap)),
+            (Opener::Pgp(unwrap), Wrap::Pgp(wrap)) => unwrap(entry.reader.key.as_str(), wrap)
+                .map(|unwrapped| unwrapped.map_err(ReadError::Pgp)),
+            (Opener::Age(_), Wrap::Pgp(_)) | (Opener::Pgp(_), Wrap::Age(_)) => None,
+        };
+        match unwrapped {
             None => {}
             Some(Err(error)) => {
                 if matches!(keys, Err(ReadError::NotAReader)) {
-                    keys = Err(ReadError::Unwrap(error));
+                    keys = Err(error);
                 }
             }
             Some(Ok(file_key)) => {
