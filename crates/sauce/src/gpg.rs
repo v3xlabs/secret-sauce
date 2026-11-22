@@ -14,6 +14,8 @@ use age_core::format::FileKey;
 use sauce::format::LARGEST_PGP_WRAP;
 use zeroize::Zeroizing;
 
+use crate::spinner::Step;
+
 /// The bytes of a file key, which is all that the wrap of a GPG reader holds.
 const FILE_KEY_BYTES: usize = 16;
 
@@ -284,6 +286,8 @@ fn run(
     input: &[u8],
     limit: usize,
 ) -> Result<(Zeroizing<Vec<u8>>, String), GpgError> {
+    // A pinentry for the PIN of a card asks on the terminal, where the spinner would draw over it.
+    let _hidden = Step::hide();
     let mut command = Command::new("gpg");
     for name in AGE_KEY_VARIABLES {
         command.env_remove(name);

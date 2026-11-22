@@ -11,7 +11,10 @@ use rand::{RngCore as _, rngs::OsRng};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
-use crate::manifest::{Machines, ReadError, ReadManifests};
+use crate::{
+    manifest::{Machines, ReadError, ReadManifests},
+    spinner::Step,
+};
 
 // Bump when the stored declarations or evaluator arguments change.
 const CACHE_SCHEMA: u32 = 3;
@@ -55,6 +58,7 @@ fn cache_key(flake: &Path) -> Option<String> {
     {
         return None;
     }
+    let _step = Step::show("Checking the flake…");
     let probes: [&[&str]; 3] = [
         &[
             "flake",

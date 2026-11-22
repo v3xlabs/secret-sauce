@@ -10,6 +10,7 @@ use crate::{
     identity::{Admin, IdentityError, OpenError},
     make::{Recipe, RecipeError},
     manifest::{FolderError, Machines, RuleError},
+    spinner::Step,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -84,7 +85,10 @@ pub fn set(
     };
     let path = secret.path(&name, root)?;
     let old = match format::load(&path) {
-        Ok(text) => Some(Admin::find(identity)?.open(&text, &name)?),
+        Ok(text) => {
+            let _step = Step::show(format!("Opening {name}…"));
+            Some(Admin::find(identity)?.open(&text, &name)?)
+        }
         Err(error) if error.kind() == io::ErrorKind::NotFound => None,
         Err(source) => return Err(SetError::Read { path, source }),
     };
@@ -118,11 +122,13 @@ pub fn set(
         formerly: old.map(|(_, old)| old.formerly).unwrap_or_default(),
         revoke,
     };
+    let step = Step::show(format!("Encrypting {name}…"));
     let text = format::write(&name, &value, &facts, bound, &secret.readers, gpg::wrap)?;
     generate::save(&path, &text).map_err(|source| SetError::Write {
         path: path.clone(),
         source,
     })?;
+    drop(step);
     println!("set {name}, version {}", facts.version);
     if revoke {
         println!("{name} stays marked revoke, because the value is the same as before");

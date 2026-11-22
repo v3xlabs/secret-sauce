@@ -19,6 +19,7 @@ use crate::{
     generate, gpg,
     make::Recipe,
     manifest::{Machines, RuleError, Secret},
+    spinner,
 };
 
 /// The most bytes of a mapping file that sauce reads.
@@ -161,8 +162,11 @@ pub fn import(
             column: error.column(),
         })?;
     let secrets = machines.secrets()?;
+    // sops can ask for a PIN or a passphrase on the terminal, so no step shows while it runs.
     let Pairs(mut values) = decrypt(sops)?;
 
+    let verb = if dry_run { "Checking" } else { "Encrypting" };
+    let working = spinner::Step::secrets(verb, pairs.len());
     let mut steps = Vec::with_capacity(pairs.len());
     let mut keys = HashSet::with_capacity(pairs.len());
     let mut names = HashSet::with_capacity(pairs.len());
@@ -186,6 +190,7 @@ pub fn import(
         };
         steps.push(step);
     }
+    drop(working);
     // The other values leave memory with the pairs, which serde_json filled and nobody wipes.
     drop(values);
 

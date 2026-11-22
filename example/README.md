@@ -63,6 +63,9 @@ If the key file is found but none of its keys can read the secrets, `sauce list`
 Use `--identity <key-file>` to pick another key.
 Set `NO_COLOR` to turn off terminal colors.
 
+A command that takes longer than a moment shows its current step on one line of stderr, such as `⠋ Evaluating machines…`.
+The line shows only when stdout and stderr are terminals and `TERM` is not `dumb`, and sauce erases it before it prints a result, an error or a prompt.
+
 Make every secret that `sauce` can make.
 
 ```sh

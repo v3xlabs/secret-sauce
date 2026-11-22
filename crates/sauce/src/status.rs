@@ -10,6 +10,7 @@ use crate::{
     color::{Color, Palette},
     identity::{Admin, IdentityError, OpenError},
     manifest::{ReadManifests, RuleError, Secret},
+    spinner::Step,
 };
 
 /// How many days before `expires` a secret shows up, so that a token from a provider can be renewed in time.
@@ -233,6 +234,7 @@ pub fn status(
     let partial = machines.failures().is_some();
     let admin = Admin::find_age(identity)?;
     let mut evaluator = Evaluator::new(admin.as_ref(), partial, Date::today());
+    let step = Step::secrets("Reading", secrets.len());
 
     let mut rows = Vec::new();
     for (name, secret) in &secrets {
@@ -294,6 +296,7 @@ pub fn status(
             });
         }
     }
+    drop(step);
     let all_inaccessible = evaluator.all_inaccessible();
     if all_inaccessible {
         rows.retain(|row| !matches!(row.problem, Problem::NoReader));

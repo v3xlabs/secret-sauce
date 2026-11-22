@@ -12,6 +12,7 @@ mod manifest_cache;
 mod rotate;
 mod search;
 mod set;
+mod spinner;
 mod status;
 
 use std::{
@@ -33,7 +34,8 @@ use crate::{
     identity::Admin,
     manifest::{Machines, ReadError, ReadManifests},
     set::Dates,
-    status::{Evaluator, Expiry, StatusError},
+    spinner::Step,
+    status::{Evaluator, Expiry, FactDates, StatusError},
 };
 
 const HEADER: [&str; 6] = ["SECRET", "MACHINES", "MADE BY", "SET", "EXPIRES", "STATE"];
@@ -191,6 +193,28 @@ enum Mark {
     NoReader,
 }
 
+/// The `SET` and `EXPIRES` cells of a secret, and the color of its expiry.
+fn date_cells(
+    dates: Option<FactDates>,
+    today: Date,
+) -> (Cow<'static, str>, Cow<'static, str>, Option<Color>) {
+    let set = dates.as_ref().map_or(Cow::Borrowed(""), |dates| {
+        match today.days_until(dates.set) {
+            days @ ..0 => format!("{}d ago", days.unsigned_abs()).into(),
+            0 => Cow::Borrowed("today"),
+            _ => dates.set.to_string().into(),
+        }
+    });
+    let (expires, expiry_color) = match dates.and_then(|dates| dates.expiry) {
+        Some(Expiry::Expired(days)) => (format!("expired {days}d ago").into(), Some(Color::Red)),
+        Some(Expiry::Today) => (Cow::Borrowed("today"), Some(Color::Yellow)),
+        Some(Expiry::Soon(days)) => (format!("in {days}d").into(), Some(Color::Yellow)),
+        Some(Expiry::Later(days)) => (format!("in {days}d").into(), None),
+        None => (Cow::Borrowed(""), None),
+    };
+    (set, expires, expiry_color)
+}
+
 fn list(
     machines: &ReadManifests,
     root: &Path,
@@ -200,6 +224,7 @@ fn list(
     let admin = Admin::find_age(identity)?;
     let today = Date::today();
     let mut evaluator = Evaluator::new(admin.as_ref(), machines.failures().is_some(), today);
+    let step = Step::secrets("Reading", secrets.len());
     let mut rows = Vec::new();
     for (name, secret) in &secrets {
         let path = root.join(&secret.definition.file);
@@ -222,22 +247,7 @@ fn list(
                 Err(source) => return Err(StatusError::Read { path, source }.into()),
             },
         };
-        let set = dates.as_ref().map_or(Cow::Borrowed(""), |dates| {
-            match today.days_until(dates.set) {
-                days @ ..0 => format!("{}d ago", days.unsigned_abs()).into(),
-                0 => Cow::Borrowed("today"),
-                _ => dates.set.to_string().into(),
-            }
-        });
-        let (expires, expiry_color) = match dates.and_then(|dates| dates.expiry) {
-            Some(Expiry::Expired(days)) => {
-                (format!("expired {days}d ago").into(), Some(Color::Red))
-            }
-            Some(Expiry::Today) => (Cow::Borrowed("today"), Some(Color::Yellow)),
-            Some(Expiry::Soon(days)) => (format!("in {days}d").into(), Some(Color::Yellow)),
-            Some(Expiry::Later(days)) => (format!("in {days}d").into(), None),
-            None => (Cow::Borrowed(""), None),
-        };
+        let (set, expires, expiry_color) = date_cells(dates, today);
         rows.push((
             [
                 Cow::Borrowed(name.as_str()),
@@ -250,6 +260,7 @@ fn list(
             expiry_color,
         ));
     }
+    drop(step);
 
     let mut widths = [0; 5];
     for (width, cell) in widths.iter_mut().zip(HEADER) {

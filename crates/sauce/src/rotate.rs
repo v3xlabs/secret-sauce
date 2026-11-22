@@ -11,6 +11,7 @@ use crate::{
     identity::{Admin, IdentityError, OpenError},
     make::{Recipe, RecipeError},
     manifest::{FolderError, Machines, RuleError, Secret},
+    spinner::Step,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -127,6 +128,7 @@ pub fn rotate(
         rotations.push(rotation(name, secret, root)?);
     }
 
+    let step = Step::secrets("Rotating", rotations.len());
     let mut outputs = Vec::new();
     let mut versions = Vec::new();
     for rotation in &rotations {
@@ -164,9 +166,18 @@ pub fn rotate(
         versions.push((rotation.name, facts.version));
     }
 
+    install(&outputs)?;
+    drop(step);
+    for (name, version) in versions {
+        println!("rotated {name}, version {version}");
+    }
+    Ok(())
+}
+
+fn install(outputs: &[(PathBuf, String)]) -> Result<(), RotateError> {
     // Every file is written before the first rename, so a failed write leaves all secrets and key pairs as they were.
     let mut staged = Vec::new();
-    for (path, text) in &outputs {
+    for (path, text) in outputs {
         match generate::stage(path, text) {
             Ok(temporary) => staged.push((temporary, path)),
             Err(source) => {
@@ -186,9 +197,6 @@ pub fn rotate(
             path: path.clone(),
             source,
         })?;
-    }
-    for (name, version) in versions {
-        println!("rotated {name}, version {version}");
     }
     Ok(())
 }

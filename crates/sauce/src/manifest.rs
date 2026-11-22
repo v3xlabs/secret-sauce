@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
 use crate::make::{LARGEST, Recipe};
+use crate::spinner::Step;
 
 /// Applied to `nixosConfigurations`, so that one `nix eval` reads every machine.
 /// A machine without the `sauce` option declares no secrets and is left out.
@@ -415,7 +416,10 @@ impl Machines {
     }
 
     fn eval_bulk(flake: &Path, write_lock: bool) -> Result<Self, ReadError> {
-        let output = nix_eval(flake, MANIFESTS, write_lock)?;
+        let output = {
+            let _step = Step::show("Evaluating machines…");
+            nix_eval(flake, MANIFESTS, write_lock)?
+        };
         eprint!("{}", String::from_utf8_lossy(&output.stderr));
         Ok(serde_json::from_slice(&output.stdout)?)
     }
@@ -632,6 +636,7 @@ fn nix_eval(flake: &Path, apply: &str, write_lock: bool) -> Result<Output, ReadE
 }
 
 fn retry_machines(flake: &Path, write_lock: bool) -> Option<PartialManifests> {
+    let _step = Step::show("Evaluating each machine on its own…");
     let output = nix_eval(flake, "builtins.attrNames", write_lock).ok()?;
     let names: Vec<String> = serde_json::from_slice(&output.stdout).ok()?;
     let next = AtomicUsize::new(0);

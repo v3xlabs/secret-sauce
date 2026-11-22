@@ -3,12 +3,13 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use sauce::format::{self, Name, NameError};
+use sauce::format::{self, Facts, Name, NameError};
 
 use crate::{
     clipboard::{self, CopyError},
     identity::{Admin, IdentityError, OpenError},
-    manifest::{ReadManifests, RuleError},
+    manifest::{ReadManifests, RuleError, Secret},
+    spinner::Step,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -95,7 +96,10 @@ pub fn get(
     };
 
     if !matches!(out, Out::Facts) {
-        let (value, _) = Admin::find(identity)?.open(&text, &name)?;
+        let (value, _) = {
+            let _step = Step::show(format!("Opening {name}…"));
+            Admin::find(identity)?.open(&text, &name)?
+        };
         if matches!(out, Out::Print) {
             return Ok(io::stdout().write_all(value.expose())?);
         }
@@ -138,7 +142,11 @@ pub fn get(
         )?;
     }
 
-    let facts = match Admin::find(identity)?.open_facts(&text, &name) {
+    let opened = {
+        let _step = Step::show(format!("Opening {name}…"));
+        Admin::find(identity)?.open_facts(&text, &name)
+    };
+    let facts = match opened {
         Err(OpenError::NoKey { .. }) => {
             return Ok(writeln!(
                 out,
@@ -147,6 +155,15 @@ pub fn get(
         }
         facts => facts?,
     };
+    Ok(write_facts(&mut out, &name, secret, &facts)?)
+}
+
+fn write_facts(
+    out: &mut impl io::Write,
+    name: &Name,
+    secret: &Secret<'_>,
+    facts: &Facts,
+) -> io::Result<()> {
     writeln!(out, "version: {}", facts.version)?;
     writeln!(out, "set: {}", facts.set)?;
     for (label, date) in [("issued", facts.issued), ("expires", facts.expires)] {

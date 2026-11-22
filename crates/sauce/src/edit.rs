@@ -16,6 +16,7 @@ use crate::{
     make::{Recipe, RecipeError},
     manifest::{FolderError, Machines, RuleError, Secret},
     rotate::matches,
+    spinner::Step,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -305,7 +306,10 @@ fn edit_one(
     text: &str,
     session: &Session,
 ) -> Result<(), EditError> {
-    let (old, facts) = session.admin.open(text, name)?;
+    let (old, facts) = {
+        let _step = Step::show(format!("Opening {name}…"));
+        session.admin.open(text, name)?
+    };
 
     let mut new = in_editor(&session.editor, &session.runtime, name, &old)?;
     // Editors end the last line with a newline, which is not part of a value that had none.
@@ -334,11 +338,13 @@ fn edit_one(
         revoke: false,
         ..facts
     };
+    let step = Step::show(format!("Encrypting {name}…"));
     let text = format::write(name, &new, &facts, bound, &secret.readers, gpg::wrap)?;
     generate::save(path, &text).map_err(|source| EditError::Write {
         path: path.to_owned(),
         source,
     })?;
+    drop(step);
     println!("edited {name}, version {}", facts.version);
     Ok(())
 }

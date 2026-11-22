@@ -13,6 +13,7 @@ use crate::{
     identity::{Admin, IdentityError, OpenError},
     make::{Recipe, RecipeError},
     manifest::{FolderError, Machines, RuleError, Secret},
+    spinner,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -109,6 +110,7 @@ pub fn generate(
     let mut creations = Vec::new();
     let mut changes = Vec::new();
     let mut unset = Vec::new();
+    let reading = spinner::Step::secrets("Reading", secrets.len());
     for (name, secret) in &secrets {
         match step(name, secret, root)? {
             Step::Create(path, recipe) => creations.push(Creation {
@@ -123,6 +125,7 @@ pub fn generate(
         }
     }
 
+    drop(reading);
     let palette = Palette::stdout();
     if dry_run {
         let readers = creations
@@ -165,6 +168,7 @@ fn apply(
     if readers_change && !confirm(&changes, creations.len()).map_err(GenerateError::Prompt)? {
         return Err(GenerateError::NotConfirmed);
     }
+    let step = spinner::Step::secrets("Encrypting", creations.len() + changes.len());
     let created_count = creations.len();
     let mut created = Vec::with_capacity(created_count);
     for Creation {
@@ -226,6 +230,7 @@ fn apply(
         }
     }
 
+    drop(step);
     for (name, path, text, public) in created {
         // The public half goes first, so that a failed write leaves no private key without it.
         let sidecar = if let Some(public) = public {
