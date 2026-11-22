@@ -298,7 +298,7 @@ Then this shell gives the `sauce` of your lock file.
 nix shell --inputs-from . secret-sauce#sauce
 ```
 
-Make an age key for yourself with `age-keygen`, and put its public key in `sauce.adminRecipients`.
+Make an age key for yourself with `age-keygen`, and put its public key in `sauce.adminRecipients.age`.
 `sauce` also finds the age key that you use with sops, in `SOPS_AGE_KEY_FILE` or `~/.config/sops/age/keys.txt`.
 On each machine, make its key with `age-keygen -o /var/lib/sauce/host.key`, and put the public key that it prints in `sauce.recipient` of that machine.
 Then run `sauce generate`, `git add` the secrets, and deploy.

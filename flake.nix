@@ -169,6 +169,37 @@
             {
               ok =
                 let
+                  # The adminRecipients of the manifest of notes, or null when the evaluation fails.
+                  emitted =
+                    modules:
+                    let
+                      manifest = (exampleFlake.nixosConfigurations.notes.extendModules { inherit modules; }).config.sauce.manifest;
+                      result = builtins.tryEval (builtins.deepSeq manifest manifest.adminRecipients);
+                    in
+                    if result.success then result.value else null;
+                  admins = age: pgp: emitted [
+                    {
+                      sauce.adminRecipients.age = lib.mkForce age;
+                      sauce.adminRecipients.pgp = lib.mkForce pgp;
+                    }
+                  ];
+                  keeps = age: pgp: admins age pgp == { inherit age pgp; };
+                  age = "age1kv6aj53yzlf5wyu32qnv39wh68apzgkqpv49c0g0zvh5fzpjqcyscym83z";
+                  fingerprint = "0123456789ABCDEF0123456789ABCDEF01234567";
+                in
+                keeps [ age ] [ fingerprint ]
+                && keeps [ ] [ fingerprint ]
+                && keeps [ "age1pq1abc" "age1yubikey1abc" ] [ ]
+                && admins [ fingerprint ] [ ] == null
+                && admins [ ] [ age ] == null
+                && admins [ ] [ (lib.toLower fingerprint) ] == null
+                && admins [ ] [ ] == null
+                && emitted [ { sauce.adminRecipients = [ age ]; } ] == null;
+              message = "Admin keys go by type in sauce.adminRecipients.age and .pgp, a key in the wrong list, both lists empty or the old flat list fails the evaluation, and post-quantum and plugin keys go in .age.";
+            }
+            {
+              ok =
+                let
                   broken = exampleFlake.nixosConfigurations.backup.extendModules {
                     modules = [
                       {
@@ -284,7 +315,7 @@
                       options.sauce = {};
                       config.sauce.manifest = {
                         recipient = "${(manifest "backup").recipient}";
-                        adminRecipients = [];
+                        adminRecipients = { age = [ "${lib.head (manifest "backup").adminRecipients.age}" ]; pgp = []; };
                         secrets.''${import ./declaration.nix} = {
                           file = "fixture.sauce.yaml";
                           once = { encoding = "hex"; bytes = 16; };
@@ -644,6 +675,16 @@
                 fi
                 cat out
                 grep -F 'makes values of up to 48 bytes, more than its maxLength of 47' out
+
+                # A --manifest file where one machine has no admin key stops the write, so no file opens only for hosts.
+                jq '.notes.adminRecipients = { age: [], pgp: [] }' ${manifests} > noadmin.json
+                rm example/secrets/ddclient/api-token.sauce.yaml
+                if printf token | sauce set ddclient/api-token --manifest noadmin.json > out 2>&1; then
+                  exit 1
+                fi
+                cat out
+                grep -x 'error: notes: sauce.adminRecipients.age and sauce.adminRecipients.pgp are both empty, and every secret needs the key of an admin' out
+                test ! -e example/secrets/ddclient/api-token.sauce.yaml
                 touch $out
               '';
           symlink =
@@ -754,7 +795,7 @@
                 cp -r ${self}/example checkout/
                 chmod -R u+w checkout
                 cd checkout
-                jq --arg key "$fingerprint" 'map_values(.adminRecipients += [$key])' ${manifests} > gpg.json
+                jq --arg key "$fingerprint" 'map_values(.adminRecipients.pgp += [$key])' ${manifests} > gpg.json
                 flags="--manifest gpg.json"
                 admin=example/snakeoil/admin.key
                 file=example/secrets/hedgedoc/db-password.sauce.yaml
@@ -836,7 +877,7 @@
 
                 # gpg encrypts to the fingerprint of a subkey, but a read never matches it, so a write refuses it.
                 subkey=$(gpg --with-colons --list-keys throwaway | awk -F: '/^sub/ { seen = 1; next } seen && /^fpr/ { print $10; exit }')
-                jq --arg key "$subkey" 'map_values(.adminRecipients += [$key])' ${manifests} > subkey.json
+                jq --arg key "$subkey" 'map_values(.adminRecipients.pgp += [$key])' ${manifests} > subkey.json
                 if printf token | sauce set ddclient/api-token --manifest subkey.json --identity $admin 2> stderr; then
                   exit 1
                 fi

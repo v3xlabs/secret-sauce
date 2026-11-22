@@ -201,17 +201,6 @@ impl Key {
     }
 }
 
-/// A GPG fingerprint for its spelling, and an age recipient for anything else, which [`is_valid`] then checks.
-impl From<String> for Key {
-    fn from(key: String) -> Self {
-        if is_fingerprint(&key) {
-            Self::Pgp(key)
-        } else {
-            Self::Age(key)
-        }
-    }
-}
-
 impl fmt::Display for Key {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
@@ -265,6 +254,7 @@ fn parse_stanza(line: &str) -> Option<Stanza> {
 /// Whether `for` and the key of a reader can stand in a file.
 ///
 /// A GPG key reads only for `admin`, because a machine reads with its age key.
+#[must_use]
 pub fn is_valid(reader: &Reader) -> bool {
     let alnum = u8::is_ascii_alphanumeric;
     let host = reader.r#for.as_bytes();

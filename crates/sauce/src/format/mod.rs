@@ -7,7 +7,7 @@ mod seal;
 mod value;
 
 pub use facts::{Date, DateError, Facts};
-pub use file::{Key, ParseError, Reader};
+pub use file::{Key, ParseError, Reader, is_valid};
 pub use name::{Name, NameError};
 pub use value::Value;
 
@@ -169,7 +169,7 @@ fn checked_recipients(
             Key::Pgp(_) => (!readers[..index].contains(reader)).then_some(None),
         };
         recipient
-            .filter(|_| file::is_valid(reader))
+            .filter(|_| is_valid(reader))
             .ok_or(WriteError::Reader(index))
     }))
 }

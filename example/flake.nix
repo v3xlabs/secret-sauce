@@ -27,7 +27,7 @@
               system.stateVersion = "26.05";
 
               sauce = {
-                adminRecipients = [ "age1kv6aj53yzlf5wyu32qnv39wh68apzgkqpv49c0g0zvh5fzpjqcyscym83z" ];
+                adminRecipients.age = [ "age1kv6aj53yzlf5wyu32qnv39wh68apzgkqpv49c0g0zvh5fzpjqcyscym83z" ];
                 identityFile = "/var/lib/sauce/host.key";
                 defaultDir = ./secrets;
               };

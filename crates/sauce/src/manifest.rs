@@ -87,6 +87,17 @@ pub enum RuleError {
     SameFile { names: [Name; 2], file: PathBuf },
     #[error("{machine} reads secret {name}, and no machine defines it")]
     Undefined { name: String, machine: String },
+    #[error("{machine} has {key:?} in adminRecipients.{list}, and it is not a key of that type")]
+    AdminKey {
+        machine: String,
+        list: &'static str,
+        key: String,
+    },
+    /// The same text as the evaluation error of `nix/module.nix`, for a `--manifest` file that skips it.
+    #[error(
+        "{0}: sauce.adminRecipients.age and sauce.adminRecipients.pgp are both empty, and every secret needs the key of an admin"
+    )]
+    NoAdmin(String),
 }
 
 /// A folder on the way to the file of a secret, which a write of that file must not go through.
@@ -145,9 +156,17 @@ pub struct MachineFailures(BTreeMap<String, ReadError>);
 #[serde(rename_all = "camelCase")]
 struct Manifest {
     recipient: String,
-    admin_recipients: Vec<String>,
+    admin_recipients: AdminRecipients,
     secrets: BTreeMap<String, Definition>,
     read: Vec<String>,
+}
+
+/// The public keys of the admins of a machine, by the program that wraps the file key for them.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct AdminRecipients {
+    age: Vec<String>,
+    pgp: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -166,6 +185,25 @@ pub struct Secret<'a> {
     pub machines: Vec<&'a str>,
     /// The admins of those machines, then the machines.
     pub readers: Vec<Reader>,
+}
+
+impl AdminRecipients {
+    /// Each key as an admin reader, with the name of its list.
+    fn readers(&self) -> impl Iterator<Item = (&'static str, Reader)> {
+        let admin = |key| Reader {
+            r#for: String::from("admin"),
+            key,
+        };
+        let age = self
+            .age
+            .iter()
+            .map(move |key| ("age", admin(Key::Age(key.clone()))));
+        let pgp = self
+            .pgp
+            .iter()
+            .map(move |key| ("pgp", admin(Key::Pgp(key.clone()))));
+        age.chain(pgp)
+    }
 }
 
 impl Definition {
@@ -399,6 +437,19 @@ impl Machines {
     fn join_secrets(&self, partial: bool) -> Result<BTreeMap<Name, Secret<'_>>, RuleError> {
         let mut secrets = BTreeMap::new();
         for (machine, manifest) in &self.0 {
+            let admins = &manifest.admin_recipients;
+            if admins.age.is_empty() && admins.pgp.is_empty() {
+                return Err(RuleError::NoAdmin(machine.clone()));
+            }
+            for (list, admin) in admins.readers() {
+                if !format::is_valid(&admin) {
+                    return Err(RuleError::AdminKey {
+                        machine: machine.clone(),
+                        list,
+                        key: admin.key.as_str().to_owned(),
+                    });
+                }
+            }
             for (name, definition) in &manifest.secrets {
                 let name = name.parse::<Name>().map_err(|source| RuleError::Name {
                     name: name.clone(),
@@ -460,11 +511,7 @@ impl Machines {
             secret.machines.sort_unstable();
             secret.machines.dedup();
             for machine in &secret.machines {
-                for key in &self.0[*machine].admin_recipients {
-                    let admin = Reader {
-                        r#for: String::from("admin"),
-                        key: Key::from(key.clone()),
-                    };
+                for (_, admin) in self.0[*machine].admin_recipients.readers() {
                     if !secret.readers.contains(&admin) {
                         secret.readers.push(admin);
                     }
@@ -622,6 +669,8 @@ fn retry_machines(flake: &Path, write_lock: bool) -> Option<PartialManifests> {
 
 #[cfg(test)]
 mod tests {
+    use sauce::format::Key;
+
     use super::{Definition, Machines, RuleError};
 
     #[test]
@@ -650,7 +699,7 @@ mod tests {
             r#"{
                 "backup": {
                     "recipient": "age1backup",
-                    "adminRecipients": ["age1admin"],
+                    "adminRecipients": { "age": ["age1admin"], "pgp": [] },
                     "read": [],
                     "secrets": {
                         "backup/ssh-key": {
@@ -661,7 +710,7 @@ mod tests {
                 },
                 "offsite": {
                     "recipient": "age1offsite",
-                    "adminRecipients": ["age1admin"],
+                    "adminRecipients": { "age": ["age1admin"], "pgp": [] },
                     "read": [],
                     "secrets": {
                         "backup/ssh-key": {
@@ -700,7 +749,7 @@ mod tests {
             let machines: Machines = serde_json::from_value(serde_json::json!({
                 "notes": {
                     "recipient": "age1notes",
-                    "adminRecipients": [],
+                    "adminRecipients": { "age": ["age1admin"], "pgp": [] },
                     "read": [],
                     "secrets": { "notes/a": { "file": file } }
                 }
@@ -729,7 +778,7 @@ mod tests {
             let machines: Machines = serde_json::from_value(serde_json::json!({
                 "notes": {
                     "recipient": "age1notes",
-                    "adminRecipients": [],
+                    "adminRecipients": { "age": ["age1admin"], "pgp": [] },
                     "read": [],
                     "secrets": {
                         "notes/a": { "file": "secrets/a.sauce.yaml" },
@@ -760,7 +809,7 @@ mod tests {
             let machines: Machines = serde_json::from_value(serde_json::json!({
                 "notes": {
                     "recipient": "age1notes",
-                    "adminRecipients": [],
+                    "adminRecipients": { "age": ["age1admin"], "pgp": [] },
                     "read": [],
                     "secrets": { "notes/a": { "file": "secrets/a.sauce.yaml", "maxLength": max_length } }
                 }
@@ -776,5 +825,95 @@ mod tests {
                 result.err()
             );
         }
+    }
+
+    #[test]
+    fn admin_key_in_the_wrong_list_stops() {
+        let fingerprint = "0123456789ABCDEF0123456789ABCDEF01234567";
+        let lower = fingerprint.to_lowercase();
+        for (age, pgp, refused) in [
+            ("age1admin", fingerprint, None),
+            (fingerprint, fingerprint, Some("age")),
+            ("age1admin", "age1admin", Some("pgp")),
+            ("age1admin", lower.as_str(), Some("pgp")),
+        ] {
+            let machines: Machines = serde_json::from_value(serde_json::json!({
+                "notes": {
+                    "recipient": "age1notes",
+                    "adminRecipients": { "age": [age], "pgp": [pgp] },
+                    "read": [],
+                    "secrets": { "notes/a": { "file": "secrets/a.sauce.yaml" } }
+                }
+            }))
+            .unwrap();
+
+            let result = machines.secrets();
+
+            match (&result, refused) {
+                (Err(RuleError::AdminKey { list, .. }), Some(expected)) => {
+                    assert_eq!(*list, expected);
+                }
+                (Ok(secrets), None) => {
+                    let secret = secrets.values().next().unwrap();
+                    let readers: Vec<_> = secret
+                        .readers
+                        .iter()
+                        .map(|reader| (reader.r#for.as_str(), &reader.key))
+                        .collect();
+                    assert_eq!(
+                        readers,
+                        [
+                            ("admin", &Key::Age(String::from("age1admin"))),
+                            ("admin", &Key::Pgp(String::from(fingerprint))),
+                            ("notes", &Key::Age(String::from("age1notes"))),
+                        ]
+                    );
+                }
+                _ => panic!("{age:?} and {pgp:?}: {:?}", result.err()),
+            }
+        }
+    }
+
+    #[test]
+    fn machine_with_no_admin_key_stops() {
+        // `backup` has an admin, so the secret that both share would still have one admin reader.
+        let machines: Machines = serde_json::from_value(serde_json::json!({
+            "backup": {
+                "recipient": "age1backup",
+                "adminRecipients": { "age": ["age1admin"], "pgp": [] },
+                "read": [],
+                "secrets": { "backup/a": { "file": "secrets/a.sauce.yaml" } }
+            },
+            "offsite": {
+                "recipient": "age1offsite",
+                "adminRecipients": { "age": [], "pgp": [] },
+                "read": ["backup/a"],
+                "secrets": {}
+            }
+        }))
+        .unwrap();
+
+        let error = machines.secrets().unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "offsite: sauce.adminRecipients.age and sauce.adminRecipients.pgp are both empty, and every secret needs the key of an admin"
+        );
+    }
+
+    #[test]
+    fn unknown_admin_list_stops() {
+        let machines = serde_json::from_value::<Machines>(serde_json::json!({
+            "notes": {
+                "recipient": "age1notes",
+                "adminRecipients": { "age": ["age1admin"], "pgp": [], "gpg": ["0123456789ABCDEF0123456789ABCDEF01234567"] },
+                "read": [],
+                "secrets": {}
+            }
+        }));
+
+        let error = machines.unwrap_err().to_string();
+
+        assert!(error.contains("unknown field `gpg`"), "{error}");
     }
 }

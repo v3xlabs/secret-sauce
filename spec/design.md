@@ -237,7 +237,10 @@ You should never depend on `sauce` alone to get your secrets back.
 Each host has a key of its own, and you have one or more for yourself.
 Hardware keys work through age plugins.
 
-A GPG key reads as an admin, never as a host, and you list its fingerprint in `sauce.adminRecipients` next to your age keys.
+You list your own keys by type: age recipients in `sauce.adminRecipients.age`, and the fingerprints of GPG keys in `sauce.adminRecipients.pgp`.
+Post-quantum and plugin keys go in `.age` too, because age tells the kinds apart by their prefix.
+A key in the wrong list fails the evaluation, and so does a machine with both lists empty.
+A GPG key reads as an admin, never as a host.
 `sauce` runs the `gpg` program on your PATH for it, so a key on a smartcard or a YubiKey works through gpg-agent and its pinentry.
 `sauce` gives gpg the wrap on a pipe, so a pinentry on the terminal needs `GPG_TTY`, as it does for sops, and a graphical pinentry needs nothing.
 Every write wraps a new file key for each reader, so each `sauce generate`, `sauce set`, `sauce edit` and `sauce rotate` needs `gpg` and the public key of each GPG reader in the keyring of whoever writes.

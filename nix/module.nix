@@ -329,9 +329,17 @@ in
       description = "The public key of this machine.";
     };
 
-    adminRecipients = mkOption {
-      type = types.nonEmptyListOf types.str;
-      description = "Your own public keys: age recipients, and the fingerprints of GPG keys as 40 upper case hex characters.";
+    adminRecipients = {
+      age = mkOption {
+        type = types.listOf (types.strMatching "age1[a-z0-9]+");
+        default = [ ];
+        description = "Your own age recipients, which read every secret of this machine. Every kind of age recipient starts with `age1` and goes here.";
+      };
+      pgp = mkOption {
+        type = types.listOf (types.strMatching "[0-9A-F]{40}");
+        default = [ ];
+        description = "The fingerprints of your own GPG keys, as 40 upper case hex characters, which read every secret of this machine.";
+      };
     };
 
     identityFile = mkOption {
@@ -355,7 +363,12 @@ in
       ) cfg.secrets;
 
       manifest = {
-        inherit (cfg) recipient adminRecipients;
+        inherit (cfg) recipient;
+        adminRecipients =
+          if cfg.adminRecipients.age == [ ] && cfg.adminRecipients.pgp == [ ] then
+            throw "sauce.adminRecipients.age and sauce.adminRecipients.pgp are both empty, and every secret needs the key of an admin."
+          else
+            cfg.adminRecipients;
         secrets = lib.mapAttrs manifestOf (lib.filterAttrs defines cfg.secrets);
         read = lib.attrNames (lib.filterAttrs (name: secret: !defines name secret) cfg.secrets);
       };

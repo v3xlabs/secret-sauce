@@ -11,7 +11,8 @@ let
   manifests = writeText "manifests.json" (
     builtins.toJSON {
       ${host} = {
-        inherit (machine.sauce) recipient adminRecipients;
+        inherit (machine.sauce) recipient;
+        inherit (machine.sauce.manifest) adminRecipients;
         read = [ ];
         secrets = lib.mapAttrs (name: _: { file = "${name}.sauce.yaml"; }) values;
       };
