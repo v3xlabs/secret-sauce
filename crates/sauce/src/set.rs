@@ -8,7 +8,7 @@ use sauce::format::{self, Date, Facts, Name, NameError, Value};
 use crate::{
     generate, gpg,
     identity::{Admin, IdentityError, OpenError},
-    make::{Recipe, RecipeError, SET_BOUND},
+    make::{Recipe, RecipeError},
     manifest::{FolderError, Machines, RuleError},
 };
 
@@ -79,10 +79,7 @@ pub fn set(
         .ok_or_else(|| SetError::NotDeclared(name.clone()))?;
     let bound = match Recipe::new(secret.definition) {
         Ok(Some(Recipe::Ed25519)) => return Err(SetError::KeyPair(name)),
-        Ok(recipe) => recipe.map_or(
-            secret.definition.max_length.unwrap_or(SET_BOUND),
-            |recipe| recipe.bound(),
-        ),
+        Ok(recipe) => secret.definition.bound(recipe.as_ref()),
         Err(source) => return Err(SetError::Recipe { name, source }),
     };
     let path = secret.path(&name, root)?;

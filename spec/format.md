@@ -82,7 +82,8 @@ The steps are 256 bytes, 1 KiB, 4 KiB, 8 KiB, 16 KiB, 32 KiB and 64 KiB.
 The padded bytes start with the length of the content, so the largest secret is 4 bytes short of 64 KiB.
 
 The step of `value` follows the bound that you declared, not the secret itself.
-The bound is the longest value that the generator can make, or `maxLength` for a secret you bring yourself, or 252 bytes when you declared neither.
+The bound is `maxLength` when you declared it, else the longest value that the generator can make, else 252 bytes.
+A declared `maxLength` is never shorter than the longest value of its generator.
 `sauce` takes the smallest step that holds the bound, and it refuses a secret that is longer than its bound.
 
 The step of `facts` is the smallest step that holds the former names and every other fact at its longest.

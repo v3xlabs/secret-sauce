@@ -282,3 +282,9 @@ pub fn look(text: &str) -> Result<(Name, Vec<Reader>), ParseError> {
         file.entries.into_iter().map(|entry| entry.reader).collect(),
     ))
 }
+
+/// Whether the `value` of a file has the step that `bound` chooses, read with no key.
+pub fn has_step(text: &str, bound: usize) -> Result<bool, ParseError> {
+    let file = File::parse(text)?;
+    Ok(seal::step(bound).is_some_and(|step| file.value.len() == step + seal::TAG_BYTES))
+}

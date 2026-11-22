@@ -17,7 +17,7 @@ use zeroize::Zeroizing;
 
 use crate::{
     generate, gpg,
-    make::{Recipe, SET_BOUND},
+    make::Recipe,
     manifest::{Machines, RuleError, Secret},
 };
 
@@ -330,10 +330,7 @@ fn step<'a>(
                 "{key:?}: {name} is a key pair, and sauce generate makes it with its public key"
             ));
         }
-        Ok(recipe) => recipe.map_or(
-            secret.definition.max_length.unwrap_or(SET_BOUND),
-            |recipe| recipe.bound(),
-        ),
+        Ok(recipe) => secret.definition.bound(recipe.as_ref()),
         Err(error) => return Step::Refuse(format!("{key:?}: secret {name}: {error}")),
     };
     if value.expose().len() > bound {

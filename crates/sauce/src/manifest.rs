@@ -11,6 +11,8 @@ use sauce::format::{self, Key, Name, Reader};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
+use crate::make::{LARGEST, Recipe};
+
 /// Applied to `nixosConfigurations`, so that one `nix eval` reads every machine.
 /// A machine without the `sauce` option declares no secrets and is left out.
 const MANIFESTS: &str = r"machines:
@@ -25,6 +27,9 @@ const MACHINE_MANIFEST: &str =
 
 /// Each worker runs its own Nix evaluator, so cap concurrent CPU and memory use.
 const RETRY_WORKERS: usize = 4;
+
+/// The bound of a secret with neither `maxLength` nor a recipe, from `spec/format.md`.
+const SET_BOUND: usize = 252;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ReadError {
@@ -56,6 +61,10 @@ pub enum RuleError {
     },
     #[error("secret {name} has the file {}, which must end in .sauce.yaml", file.display())]
     FileSuffix { name: Name, file: PathBuf },
+    #[error(
+        "secret {name} has maxLength {max_length}, and a file holds a value of 1 to {LARGEST} bytes"
+    )]
+    MaxLength { name: Name, max_length: usize },
     /// One name has one definition, so two machines that define it give it the same fields.
     #[error("secret {name} has a different {field} on {} and on {}", machines[0], machines[1])]
     Redefined {
@@ -238,6 +247,12 @@ impl Definition {
             .map(|declaration| Sha256::digest(declaration).into())
     }
 
+    /// The longest value of the secret in bytes: `maxLength`, else the longest value of `recipe`, else [`SET_BOUND`].
+    pub fn bound(&self, recipe: Option<&Recipe>) -> usize {
+        self.max_length
+            .unwrap_or_else(|| recipe.map_or(SET_BOUND, Recipe::bound))
+    }
+
     fn difference(&self, other: &Self) -> Option<&'static str> {
         [
             ("file", self.file != other.file),
@@ -395,6 +410,11 @@ impl Machines {
                         name,
                         file: definition.file.clone(),
                     });
+                }
+                if let Some(max_length) = definition.max_length
+                    && !(1..=LARGEST).contains(&max_length)
+                {
+                    return Err(RuleError::MaxLength { name, max_length });
                 }
                 match secrets.entry(name) {
                     Entry::Vacant(entry) => {
@@ -729,6 +749,30 @@ mod tests {
                 ),
                 conflict,
                 "{other:?}: {:?}",
+                result.err()
+            );
+        }
+    }
+
+    #[test]
+    fn max_length_outside_what_a_file_holds_stops() {
+        for (max_length, refused) in [(0, true), (1, false), (65_532, false), (65_533, true)] {
+            let machines: Machines = serde_json::from_value(serde_json::json!({
+                "notes": {
+                    "recipient": "age1notes",
+                    "adminRecipients": [],
+                    "read": [],
+                    "secrets": { "notes/a": { "file": "secrets/a.sauce.yaml", "maxLength": max_length } }
+                }
+            }))
+            .unwrap();
+
+            let result = machines.secrets();
+
+            assert_eq!(
+                matches!(result, Err(RuleError::MaxLength { .. })),
+                refused,
+                "{max_length}: {:?}",
                 result.err()
             );
         }

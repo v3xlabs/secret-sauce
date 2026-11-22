@@ -86,6 +86,13 @@ The bound selects the padding step, and `sauce` refuses a longer value.
 sauce.secrets."tls/private-key".maxLength = 4096;
 ```
 
+`maxLength` can also sit next to `generator` or `once`, for a secret whose value you sometimes bring yourself, for example with `sauce import`.
+`sauce generate` and `sauce rotate` still make values of the recipe, and the file takes the padding step of `maxLength`.
+The evaluation refuses a `maxLength` shorter than the longest value of the recipe, and the error names both numbers.
+Adding `maxLength` does not change the `generator` fact, so `sauce status` does not ask for a rotate.
+When a changed bound takes another padding step, `sauce generate` encrypts the same value again in the new step, with the key of an admin, and it refuses a value that is longer than the new bound.
+A lower bound in the same step changes no file, so `sauce generate` does not open the value to compare it, and only the next write of the value meets the new bound.
+
 On the host, a secret is a file at `/run/sauce/<name>` with the owner and mode you gave it.
 Templates work as they do in sops-nix, for the env file that needs two secrets and some plain settings.
 

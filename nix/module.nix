@@ -73,7 +73,7 @@ let
       options = {
         generator = optional generator "How `sauce` makes the value, and makes it again on `sauce rotate`.";
         once = optional once "How `sauce` makes the value one time.";
-        maxLength = optional (types.ints.between 1 65532) "The maximum length in bytes of a value you bring yourself.";
+        maxLength = optional (types.ints.between 1 65532) "The maximum length in bytes of the value, which sets its padding step. With `generator` or `once` it must hold the longest value that they make.";
         note = optional types.str "Text that `sauce` shows next to the secret.";
         file = optional types.path "The `.sauce.yaml` file of the secret.";
         neededForUsers = mkOption {
@@ -135,6 +135,54 @@ let
 
   present = lib.filterAttrs (_: value: value != null);
 
+  # The longest value of a `generator` or `once` in bytes, as `sauce` makes it, or null for a shape that `sauce` refuses.
+  longestOf =
+    recipe:
+    let
+      text = [
+        "alphanum"
+        "hex"
+        "base64"
+        "base64url"
+        "digits"
+      ];
+      bits =
+        if recipe.encoding == null then
+          null
+        else
+          {
+            hex = 4;
+            base64 = 6;
+            base64url = 6;
+          }
+          .${recipe.encoding} or null;
+      characters = (recipe.bytes * 8 + bits - 1) / bits;
+    in
+    if (recipe.keypair or null) != null then
+      # `ED25519_BYTES` in `crates/sauce/src/make.rs`.
+      if
+        recipe.keypair == "ssh-ed25519"
+        && recipe.encoding == null
+        && recipe.min == null
+        && recipe.max == null
+        && recipe.bytes == null
+      then
+        387
+      else
+        null
+    else if
+      recipe.min != null
+      && recipe.max != null
+      && recipe.bytes == null
+      && recipe.min <= recipe.max
+      && lib.elem recipe.encoding text
+    then
+      recipe.max
+    else if recipe.min == null && recipe.max == null && recipe.bytes != null && bits != null then
+      if recipe.encoding == "base64" then (characters + 3) / 4 * 4 else characters
+    else
+      null;
+
   defines =
     name: secret:
     !(lib.elem name cfg.read)
@@ -148,10 +196,14 @@ let
 
   manifestOf =
     name: secret:
+    let
+      recipe = if secret.generator != null then secret.generator else secret.once;
+      longest = if recipe == null then null else longestOf recipe;
+    in
     if secret.generator != null && secret.once != null then
       throw "sauce.secrets.\"${name}\" sets both generator and once, and a secret can have one of them or neither."
-    else if secret.maxLength != null && (secret.generator != null || secret.once != null) then
-      throw "sauce.secrets.\"${name}\" sets maxLength with generator or once, and maxLength is for a value you bring yourself."
+    else if secret.maxLength != null && longest != null && longest > secret.maxLength then
+      throw "sauce.secrets.\"${name}\" makes values of up to ${toString longest} bytes, more than its maxLength of ${toString secret.maxLength}."
     else
       present {
         file = fileOf name secret;

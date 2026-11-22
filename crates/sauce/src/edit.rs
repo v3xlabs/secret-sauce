@@ -13,7 +13,7 @@ use sauce::format::{self, Date, Facts, Name, NameError, Value};
 use crate::{
     generate, gpg,
     identity::{Admin, IdentityError, OpenError},
-    make::{Recipe, RecipeError, SET_BOUND},
+    make::{Recipe, RecipeError},
     manifest::{FolderError, Machines, RuleError, Secret},
     rotate::matches,
 };
@@ -250,10 +250,7 @@ fn ask(name: &Name) -> io::Result<Answer> {
 fn bound(name: &Name, secret: &Secret<'_>) -> Result<usize, EditError> {
     match Recipe::new(secret.definition) {
         Ok(Some(Recipe::Ed25519)) => Err(EditError::KeyPair(name.clone())),
-        Ok(recipe) => Ok(recipe.map_or(
-            secret.definition.max_length.unwrap_or(SET_BOUND),
-            |recipe| recipe.bound(),
-        )),
+        Ok(recipe) => Ok(secret.definition.bound(recipe.as_ref())),
         Err(source) => Err(EditError::Recipe {
             name: name.clone(),
             source,

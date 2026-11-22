@@ -17,7 +17,7 @@ const STEPS: [usize; 7] = [256, 1024, 4096, 8192, 16384, 32768, 65536];
 const LENGTH_BYTES: usize = 4;
 
 /// The bytes of the ChaCha20-Poly1305 tag at the end of each sealed field.
-const TAG_BYTES: usize = 16;
+pub const TAG_BYTES: usize = 16;
 
 /// The three outputs of HKDF-SHA-256 over one file key.
 pub struct Keys {

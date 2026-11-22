@@ -11,7 +11,7 @@ use crate::{
     color::{Color, Palette},
     gpg,
     identity::{Admin, IdentityError, OpenError},
-    make::{Recipe, RecipeError, SET_BOUND},
+    make::{Recipe, RecipeError},
     manifest::{FolderError, Machines, RuleError, Secret},
 };
 
@@ -61,6 +61,10 @@ pub enum GenerateError {
     Prompt(#[source] io::Error),
     #[error("reader changes not approved; no files changed")]
     NotConfirmed,
+    #[error(
+        "{name} has a value longer than its bound of {bound} bytes, so sauce generate does not encrypt it again; give it a shorter value with `sauce set {name}`, or raise its maxLength"
+    )]
+    LongerThanBound { name: Name, bound: usize },
     #[error(transparent)]
     Identity(#[from] IdentityError),
     #[error(transparent)]
@@ -76,7 +80,7 @@ enum Step<'a> {
     None,
 }
 
-/// A secret whose file has other readers than the machines declare.
+/// A secret whose file has other readers than the machines declare, or a `value` in another step than its bound chooses.
 struct Change<'a> {
     name: &'a Name,
     path: PathBuf,
@@ -155,7 +159,10 @@ fn apply(
     identity: Option<&Path>,
     palette: Palette,
 ) -> Result<(), GenerateError> {
-    if !changes.is_empty() && !confirm(&changes, creations.len()).map_err(GenerateError::Prompt)? {
+    let readers_change = changes
+        .iter()
+        .any(|change| !change.gained.is_empty() || !change.lost.is_empty());
+    if readers_change && !confirm(&changes, creations.len()).map_err(GenerateError::Prompt)? {
         return Err(GenerateError::NotConfirmed);
     }
     let created_count = creations.len();
@@ -181,7 +188,7 @@ fn apply(
             name,
             &made.value,
             &facts,
-            recipe.bound(),
+            secret.definition.bound(Some(&recipe)),
             &secret.readers,
             gpg::wrap,
         )
@@ -196,6 +203,12 @@ fn apply(
         let admin = Admin::find(identity)?;
         for change in changes {
             let (value, mut facts) = admin.open(&change.text, change.name)?;
+            if value.expose().len() > change.bound {
+                return Err(GenerateError::LongerThanBound {
+                    name: change.name.clone(),
+                    bound: change.bound,
+                });
+            }
             facts.revoke |= !change.lost.is_empty();
             let text = format::write(
                 change.name,
@@ -413,7 +426,12 @@ fn step<'a>(
         .iter()
         .filter(|reader| !readers.contains(reader))
         .collect();
-    if lost.is_empty() && gained.is_empty() {
+    let bound = secret.definition.bound(recipe.as_ref());
+    let restep = !format::has_step(&text, bound).map_err(|source| GenerateError::Parse {
+        path: path.clone(),
+        source,
+    })?;
+    if lost.is_empty() && gained.is_empty() && !restep {
         return Ok(Step::None);
     }
     Ok(Step::Change(Change {
@@ -423,9 +441,6 @@ fn step<'a>(
         readers: &secret.readers,
         gained,
         lost,
-        bound: recipe.as_ref().map_or(
-            secret.definition.max_length.unwrap_or(SET_BOUND),
-            Recipe::bound,
-        ),
+        bound,
     }))
 }

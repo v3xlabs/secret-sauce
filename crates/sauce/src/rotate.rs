@@ -149,7 +149,7 @@ pub fn rotate(
             rotation.name,
             &made.value,
             &facts,
-            rotation.recipe.bound(),
+            rotation.secret.definition.bound(Some(&rotation.recipe)),
             &rotation.secret.readers,
             gpg::wrap,
         )

@@ -86,6 +86,16 @@
               }).config.sauce.manifest
             else manifest name) exampleFlake.nixosConfigurations)
           );
+          # `hedgedoc/db-password` makes 40 to 48 characters and takes a value of up to `maxLength` bytes.
+          boundManifests =
+            maxLength:
+            pkgs.writeText "bound-${toString maxLength}-manifests.json" (
+              builtins.toJSON (lib.mapAttrs (name: machine: if name == "notes" then
+                (machine.extendModules {
+                  modules = [ { sauce.secrets."hedgedoc/db-password".maxLength = maxLength; } ];
+                }).config.sauce.manifest
+              else manifest name) exampleFlake.nixosConfigurations)
+            );
           # `offsite` also reads `ddclient/api-token`, so a `sauce generate` back to `manifests` marks it `revoke`.
           widerManifests = pkgs.writeText "manifests.json" (
             builtins.toJSON (
@@ -130,12 +140,31 @@
             {
               ok =
                 let
-                  broken = exampleFlake.nixosConfigurations.notes.extendModules {
-                    modules = [ { sauce.secrets."hedgedoc/db-password".maxLength = 4096; } ];
-                  };
+                  evaluates =
+                    machine: secrets:
+                    (builtins.tryEval (
+                      builtins.deepSeq
+                        (exampleFlake.nixosConfigurations.${machine}.extendModules {
+                          modules = [ { sauce.secrets = secrets; } ];
+                        }).config.sauce.manifest
+                        true
+                    )).success;
                 in
-                !(builtins.tryEval (builtins.deepSeq broken.config.sauce.manifest true)).success;
-              message = "maxLength with a generator is refused.";
+                evaluates "notes" { "hedgedoc/db-password".maxLength = 48; }
+                && !evaluates "notes" { "hedgedoc/db-password".maxLength = 47; }
+                && evaluates "notes" { "hedgedoc/session-secret".maxLength = 43; }
+                && !evaluates "notes" { "hedgedoc/session-secret".maxLength = 42; }
+                # The key pair is 387 bytes, as `ED25519_BYTES` in `crates/sauce/src/make.rs`.
+                && evaluates "backup" { "backup/ssh-key".maxLength = 387; }
+                && !evaluates "backup" { "backup/ssh-key".maxLength = 386; }
+                # A generator that mixes `max` and `bytes` is left to sauce, which refuses its shape.
+                && evaluates "notes" {
+                  "hedgedoc/db-password" = {
+                    generator.bytes = 4;
+                    maxLength = 1;
+                  };
+                };
+              message = "maxLength next to a generator holds its longest value, max, the encoded length of bytes or the 387 bytes of an ssh-ed25519 key pair, or the evaluation fails.";
             }
             {
               ok =
@@ -401,6 +430,7 @@
                 nativeBuildInputs = [
                   self.packages.${pkgs.stdenv.hostPlatform.system}.sauce
                   pkgs.age
+                  pkgs.jq
                   pkgs.sops
                 ];
               }
@@ -550,6 +580,70 @@
                 grep -x 'imported "unused" as sso/miniflux' out
                 [[ -f example/secrets/sso/miniflux.sauce.yaml && ! -e example/secrets/kanidm/idm-admin-password.sauce.yaml ]]
                 [[ -z $(find example -name '*.new' ! -name api-token.sauce.yaml.new) ]]
+
+                # With maxLength = 64, a generated secret takes 64 bytes from sauce import and sauce set, refuses 65, and sauce rotate still makes 40 to 48 characters.
+                boundFlags="--manifest ${boundManifests 64}"
+                rm example/secrets/hedgedoc/db-password.sauce.yaml
+                fits=$(head -c 64 /dev/zero | tr '\0' b)
+                printf 'fits: %s\nlonger: %sb\n' "$fits" "$fits" > plain.yaml
+                sops encrypt --age "$(age-keygen -y "$SOPS_AGE_KEY_FILE")" --input-type yaml --output-type yaml plain.yaml > bound.sops.yaml
+                rm plain.yaml
+                printf '{ "longer": "hedgedoc/db-password" }\n' > longer.json
+                if sauce import bound.sops.yaml longer.json $boundFlags > out 2>&1; then
+                  exit 1
+                fi
+                cat out
+                grep -x 'refuse "longer": the value is longer than the bound of hedgedoc/db-password, 64 bytes' out
+                printf '{ "fits": "hedgedoc/db-password" }\n' > fits.json
+                sauce import bound.sops.yaml fits.json $boundFlags
+                [[ $(sauce get hedgedoc/db-password --print $boundFlags --identity $admin) == "$fits" ]]
+                if printf '%sc' "$fits" | sauce set hedgedoc/db-password $boundFlags --identity $admin; then
+                  exit 1
+                fi
+                printf '%s' "$fits" | tr b c | sauce set hedgedoc/db-password $boundFlags --identity $admin
+                [[ $(sauce get hedgedoc/db-password --print $boundFlags --identity $admin) == "$(printf '%s' "$fits" | tr b c)" ]]
+                sauce rotate hedgedoc/db-password $boundFlags --identity $admin
+                [[ $(sauce get hedgedoc/db-password --print $boundFlags --identity $admin) =~ ^[A-Za-z0-9]{40,48}$ ]]
+                # The generator fact leaves maxLength out, so the declaration without it names the generator that made this value.
+                sauce get hedgedoc/db-password $flags --identity $admin | grep -x 'made by: generator encoding=alphanum min=40 max=48'
+
+                # A maxLength of 253 takes the 1 KiB step, and sauce generate and sauce rotate pad the value of the generator to it.
+                wideFlags="--manifest ${boundManifests 253}"
+                file=example/secrets/hedgedoc/db-password.sauce.yaml
+                stored() { grep '^value: ' $file | cut -d' ' -f2 | base64 -d | wc -c; }
+                [[ $(stored) -eq 272 ]]
+                rm $file
+                sauce generate $wideFlags
+                [[ $(stored) -eq 1040 ]]
+                sauce rotate hedgedoc/db-password $wideFlags --identity $admin
+                [[ $(stored) -eq 1040 ]]
+                [[ $(sauce get hedgedoc/db-password --print $wideFlags --identity $admin) =~ ^[A-Za-z0-9]{40,48}$ ]]
+
+                # A bound in another step makes sauce generate encrypt the same value again, in the step of the bound, with no prompt.
+                value=$(sauce get hedgedoc/db-password --print $wideFlags --identity $admin)
+                sauce generate $flags --identity $admin < /dev/null > out
+                cat out
+                grep -x 're-encrypted hedgedoc/db-password' out
+                [[ $(stored) -eq 272 ]]
+                [[ $(sauce get hedgedoc/db-password --print $flags --identity $admin) == "$value" ]]
+
+                # A stored value longer than the bound in the other step stops sauce generate, and the file stays as it is.
+                head -c 200 /dev/zero | tr '\0' d | sauce set hedgedoc/db-password $wideFlags --identity $admin
+                sum=$(sha256sum < $file)
+                if sauce generate $flags --identity $admin < /dev/null > out 2>&1; then
+                  exit 1
+                fi
+                cat out
+                grep -xF 'error: hedgedoc/db-password has a value longer than its bound of 48 bytes, so sauce generate does not encrypt it again; give it a shorter value with `sauce set hedgedoc/db-password`, or raise its maxLength' out
+                [[ $(sha256sum < $file) == "$sum" ]]
+
+                # A --manifest file skips the evaluation, so sauce refuses a recipe longer than maxLength itself.
+                jq '.notes.secrets."hedgedoc/db-password".maxLength = 47' ${manifests} > short.json
+                if sauce generate --dry-run --manifest short.json < /dev/null > out 2>&1; then
+                  exit 1
+                fi
+                cat out
+                grep -F 'makes values of up to 48 bytes, more than its maxLength of 47' out
                 touch $out
               '';
           symlink =

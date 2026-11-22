@@ -7,13 +7,11 @@ use crate::manifest::{Definition, Generator, Once};
 
 /// The length of an OpenSSH ed25519 private key with no comment and no passphrase, as `ssh-key` writes it.
 /// It is the bound of the key pair `ssh-ed25519`, so a new layout in `ssh-key` makes `format::write` refuse the key.
+/// `longestOf` in `nix/module.nix` has the same number, so that the evaluation refuses a `maxLength` below it.
 const ED25519_BYTES: usize = 387;
 
 /// The longest value that a `.sauce.yaml` file holds, 4 bytes short of the largest step in `spec/format.md`.
-const LARGEST: usize = 65_532;
-
-/// The bound of a value that `sauce set` gives, from `spec/format.md`, as long as a declaration has no `maxLength`.
-pub const SET_BOUND: usize = 252;
+pub const LARGEST: usize = 65_532;
 
 static ENCODINGS: [Encoding; 5] = [
     Encoding {
@@ -77,6 +75,16 @@ pub enum RecipeError {
     Unsupported(String),
     #[error("`{0}` makes values longer than the {LARGEST} bytes that a file holds")]
     TooLong(String),
+    #[error(
+        "`{declaration}` makes values of up to {longest} bytes, more than its maxLength of {max_length}"
+    )]
+    OverMaxLength {
+        declaration: String,
+        longest: usize,
+        max_length: usize,
+    },
+    #[error("`generator` and `once` are both set, and a secret can have one of them or neither")]
+    GeneratorAndOnce,
 }
 
 /// A value that `sauce` made.
@@ -91,13 +99,23 @@ impl Recipe {
     pub fn new(definition: &Definition) -> Result<Option<Self>, RecipeError> {
         let recipe = match (&definition.generator, &definition.once) {
             (None, None) => return Ok(None),
-            (Some(generator), _) => Self::generator(generator),
+            (Some(generator), None) => Self::generator(generator),
             (None, Some(once)) => Self::once(once),
+            (Some(_), Some(_)) => return Err(RecipeError::GeneratorAndOnce),
         };
         let declaration = || definition.declaration().unwrap_or_default();
         let recipe = recipe.ok_or_else(|| RecipeError::Unsupported(declaration()))?;
         if recipe.bound() > LARGEST {
             return Err(RecipeError::TooLong(declaration()));
+        }
+        if let Some(max_length) = definition.max_length
+            && recipe.bound() > max_length
+        {
+            return Err(RecipeError::OverMaxLength {
+                declaration: declaration(),
+                longest: recipe.bound(),
+                max_length,
+            });
         }
         Ok(Some(recipe))
     }
@@ -354,5 +372,19 @@ mod tests {
         assert!(recipe(r#"{ "encoding": "digits", "bytes": 8 }"#).is_none());
         assert!(recipe(r#"{ "encoding": "base64url", "min": 8, "max": 8, "bytes": 8 }"#).is_none());
         assert!(recipe(r#"{ "encoding": "base64url", "min": 9, "max": 8 }"#).is_none());
+    }
+
+    #[test]
+    fn generator_and_once_together_stop() {
+        let definition: Definition = serde_json::from_str(
+            r#"{
+                "file": "a.sauce.yaml",
+                "generator": { "encoding": "hex", "bytes": 16 },
+                "once": { "encoding": "hex", "bytes": 1024 }
+            }"#,
+        )
+        .unwrap();
+
+        assert!(Recipe::new(&definition).is_err());
     }
 }
