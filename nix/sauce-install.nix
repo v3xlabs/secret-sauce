@@ -17,5 +17,8 @@ rustPlatform.buildRustPackage {
     "sauce-install"
   ];
   doCheck = false;
-  meta.mainProgram = "sauce-install";
+  meta = {
+    license = lib.licenses.gpl3Only;
+    mainProgram = "sauce-install";
+  };
 }

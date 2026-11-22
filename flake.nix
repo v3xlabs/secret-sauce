@@ -27,7 +27,10 @@
             "sauce"
           ];
           doCheck = false;
-          meta.mainProgram = "sauce";
+          meta = {
+            license = pkgs.lib.licenses.gpl3Only;
+            mainProgram = "sauce";
+          };
         };
       });
 
