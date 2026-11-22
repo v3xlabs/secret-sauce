@@ -486,21 +486,6 @@
                 grep -x 'refuse "unused": .*/example/secrets/sso/hedgedoc.sauce.yaml is not a file' out
                 rmdir example/secrets/sso/hedgedoc.sauce.yaml
 
-                # A folder that is a symbolic link stops the import, in a dry run too, and nothing lands where it points.
-                rmdir example/secrets/sso
-                mkdir "$TMPDIR/elsewhere"
-                ln -s "$TMPDIR/elsewhere" example/secrets/sso
-                for dry in --dry-run ""; do
-                  if sauce import secrets.sops.yaml folder.json $dry $flags > out 2>&1; then
-                    exit 1
-                  fi
-                  leaks out
-                  cat out
-                  grep -x 'refuse "unused": the folder .*/example/secrets/sso of sso/hedgedoc is a symbolic link' out
-                done
-                [[ -z $(ls -A "$TMPDIR/elsewhere") ]]
-                rm example/secrets/sso
-
                 # A mapping file over 1 MiB stops the import, even when its content is fine.
                 { printf '{ "unused": "sso/hedgedoc"'; head -c 1048576 /dev/zero | tr '\0' ' '; printf '}\n'; } > large.json
                 if sauce import secrets.sops.yaml large.json --dry-run $flags > out 2>&1; then
@@ -565,6 +550,81 @@
                 grep -x 'imported "unused" as sso/miniflux' out
                 [[ -f example/secrets/sso/miniflux.sauce.yaml && ! -e example/secrets/kanidm/idm-admin-password.sauce.yaml ]]
                 [[ -z $(find example -name '*.new' ! -name api-token.sauce.yaml.new) ]]
+                touch $out
+              '';
+          symlink =
+            pkgs.runCommand "sauce-symlink"
+              {
+                nativeBuildInputs = [
+                  self.packages.${pkgs.stdenv.hostPlatform.system}.sauce
+                  pkgs.age
+                  pkgs.sops
+                ];
+              }
+              ''
+                export HOME="$TMPDIR/home"
+                mkdir -p "$HOME"
+                mkdir checkout
+                cp -r ${self}/example checkout/
+                chmod -R u+w checkout
+                cd checkout
+                flags="--manifest ${manifests}"
+                export SAUCE_IDENTITY=example/snakeoil/admin.key
+                sauce generate $flags
+
+                # The folder sso is a link to a folder outside the checkout, where sso/miniflux has a file and sso/hedgedoc has none.
+                mv example/secrets/sso "$TMPDIR/elsewhere"
+                rm "$TMPDIR/elsewhere/hedgedoc.sauce.yaml"
+                ln -s "$TMPDIR/elsewhere" example/secrets/sso
+                files() { find "$TMPDIR/elsewhere" -type f | sort | xargs sha256sum; }
+                files > before
+                refused() {
+                  cat out
+                  grep -x "$1the folder .*/example/secrets/sso of $2 is a symbolic link" out
+                }
+
+                age-keygen -o "$TMPDIR/sops.key" 2> /dev/null
+                export SOPS_AGE_KEY_FILE="$TMPDIR/sops.key"
+                printf 'hedgedoc: imported-value\nminiflux: imported-value\n' > plain.yaml
+                sops encrypt --age "$(age-keygen -y "$SOPS_AGE_KEY_FILE")" --input-type yaml --output-type yaml plain.yaml > secrets.sops.yaml
+                rm plain.yaml
+                printf '{ "hedgedoc": "sso/hedgedoc", "miniflux": "sso/miniflux" }\n' > import.json
+                for dry in --dry-run ""; do
+                  if sauce import secrets.sops.yaml import.json $dry $flags > out 2>&1; then
+                    exit 1
+                  fi
+                  refused 'refuse "hedgedoc": ' sso/hedgedoc
+                  refused 'refuse "miniflux": ' sso/miniflux
+                done
+
+                if printf new-value | sauce set sso/hedgedoc $flags > out 2>&1; then
+                  exit 1
+                fi
+                refused 'error: ' sso/hedgedoc
+                if printf new-value | sauce set sso/miniflux $flags > out 2>&1; then
+                  exit 1
+                fi
+                refused 'error: ' sso/miniflux
+
+                export XDG_RUNTIME_DIR=$(mktemp -d -p /dev/shm)
+                echo 'printf edited-value > "$1"' > editor
+                if EDITOR="sh $PWD/editor" sauce edit sso/miniflux $flags > out 2>&1; then
+                  exit 1
+                fi
+                refused 'error: ' sso/miniflux
+
+                if sauce rotate sso/miniflux $flags > out 2>&1; then
+                  exit 1
+                fi
+                refused 'error: ' sso/miniflux
+
+                # sso/hedgedoc comes first, and generate would make its file.
+                if sauce generate $flags > out 2>&1; then
+                  exit 1
+                fi
+                refused 'error: ' sso/hedgedoc
+
+                files | diff before -
                 touch $out
               '';
           gpg =

@@ -14,7 +14,7 @@ use crate::{
     generate, gpg,
     identity::{Admin, IdentityError, OpenError},
     make::{Recipe, RecipeError, SET_BOUND},
-    manifest::{Machines, RuleError, Secret},
+    manifest::{FolderError, Machines, RuleError, Secret},
     rotate::matches,
 };
 
@@ -38,6 +38,8 @@ pub enum EditError {
     },
     #[error("{0} has no file yet, and `sauce set {0}` or `sauce generate` makes it")]
     Missing(Name),
+    #[error(transparent)]
+    Folder(#[from] FolderError),
     #[error("cannot read {}: {source}", path.display())]
     Read {
         path: PathBuf,
@@ -275,7 +277,7 @@ fn environment() -> Result<(OsString, PathBuf), EditError> {
 
 /// Reads the file of a secret, and refuses it when its readers are not the declared ones, so that an edit never changes who can read the value.
 fn load(name: &Name, secret: &Secret<'_>, root: &Path) -> Result<(PathBuf, String), EditError> {
-    let path = root.join(&secret.definition.file);
+    let path = secret.path(name, root)?;
     let text = format::load(&path).map_err(|source| {
         if source.kind() == io::ErrorKind::NotFound {
             EditError::Missing(name.clone())

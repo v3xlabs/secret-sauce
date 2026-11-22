@@ -12,7 +12,7 @@ use crate::{
     gpg,
     identity::{Admin, IdentityError, OpenError},
     make::{Recipe, RecipeError, SET_BOUND},
-    manifest::{Machines, RuleError, Secret},
+    manifest::{FolderError, Machines, RuleError, Secret},
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -25,6 +25,8 @@ pub enum GenerateError {
         #[source]
         source: RecipeError,
     },
+    #[error(transparent)]
+    Folder(#[from] FolderError),
     #[error("cannot read {}: {source}", path.display())]
     Read {
         path: PathBuf,
@@ -382,7 +384,7 @@ fn step<'a>(
         name: name.clone(),
         source,
     })?;
-    let path = root.join(&secret.definition.file);
+    let path = secret.path(name, root)?;
     let text = match format::load(&path) {
         Ok(text) => text,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {

@@ -10,7 +10,7 @@ use crate::{
     generate, gpg,
     identity::{Admin, IdentityError, OpenError},
     make::{Recipe, RecipeError},
-    manifest::{Machines, RuleError, Secret},
+    manifest::{FolderError, Machines, RuleError, Secret},
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -35,6 +35,8 @@ pub enum RotateError {
         #[source]
         source: RecipeError,
     },
+    #[error(transparent)]
+    Folder(#[from] FolderError),
     #[error("cannot read {}: {source}", path.display())]
     Read {
         path: PathBuf,
@@ -238,7 +240,7 @@ fn rotation<'a>(
             source,
         })?
         .ok_or_else(|| RotateError::NoGenerator(name.clone()))?;
-    let path = root.join(&secret.definition.file);
+    let path = secret.path(name, root)?;
     let text = format::load(&path).map_err(|source| {
         if source.kind() == io::ErrorKind::NotFound {
             RotateError::Missing(name.clone())

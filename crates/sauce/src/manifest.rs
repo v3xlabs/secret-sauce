@@ -80,6 +80,19 @@ pub enum RuleError {
     Undefined { name: String, machine: String },
 }
 
+/// A folder on the way to the file of a secret, which a write of that file must not go through.
+#[derive(Debug, thiserror::Error)]
+pub enum FolderError {
+    #[error("the folder {} of {name} is a symbolic link", folder.display())]
+    Link { name: Name, folder: PathBuf },
+    #[error("cannot read {}: {source}", folder.display())]
+    Read {
+        folder: PathBuf,
+        #[source]
+        source: io::Error,
+    },
+}
+
 /// What a machine declares about one secret that it defines.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Definition {
@@ -235,6 +248,31 @@ impl Definition {
         ]
         .into_iter()
         .find_map(|(field, differs)| differs.then_some(field))
+    }
+}
+
+impl Secret<'_> {
+    /// The file of the secret in `root`, refused when a folder between `root` and the file is a symbolic link, because a write would land where the link points.
+    ///
+    /// A folder that becomes a link after this check still takes the write where it points.
+    pub fn path(&self, name: &Name, root: &Path) -> Result<PathBuf, FolderError> {
+        let file = &self.definition.file;
+        let mut folder = root.to_path_buf();
+        for part in file.parent().into_iter().flat_map(Path::components) {
+            folder.push(part);
+            match fs::symlink_metadata(&folder) {
+                Ok(metadata) if metadata.is_symlink() => {
+                    return Err(FolderError::Link {
+                        name: name.clone(),
+                        folder,
+                    });
+                }
+                Ok(_) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => break,
+                Err(source) => return Err(FolderError::Read { folder, source }),
+            }
+        }
+        Ok(root.join(file))
     }
 }
 

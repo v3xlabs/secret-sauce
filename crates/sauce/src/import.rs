@@ -341,34 +341,10 @@ fn step<'a>(
             "{key:?}: the value is longer than the bound of {name}, {bound} bytes"
         ));
     }
-    // A symbolic link among the folders would take the write out of the source root.
-    let mut folder = root.to_path_buf();
-    for part in secret
-        .definition
-        .file
-        .parent()
-        .into_iter()
-        .flat_map(Path::components)
-    {
-        folder.push(part);
-        match fs::symlink_metadata(&folder) {
-            Ok(metadata) if metadata.is_symlink() => {
-                return Step::Refuse(format!(
-                    "{key:?}: the folder {} of {name} is a symbolic link",
-                    folder.display()
-                ));
-            }
-            Ok(_) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => break,
-            Err(error) => {
-                return Step::Refuse(format!(
-                    "{key:?}: cannot read {}: {error}",
-                    folder.display()
-                ));
-            }
-        }
-    }
-    let path = root.join(&secret.definition.file);
+    let path = match secret.path(name, root) {
+        Ok(path) => path,
+        Err(error) => return Step::Refuse(format!("{key:?}: {error}")),
+    };
     match fs::symlink_metadata(&path) {
         // A symbolic link counts as a file, even when it points nowhere.
         Ok(metadata) if metadata.is_file() || metadata.is_symlink() => {
