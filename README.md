@@ -1,6 +1,8 @@
-# secret-sauce
+![secret-sauce](docs/lettermark.svg)
 
-Secrets for NixOS that live in git and do not give away their length.
+Like sops with sops-nix, plus a lifecycle: `sauce` generates and rotates the secrets of your NixOS machines, tracks their expiry dates, keeps them encrypted in your repository, and pads each one so that its length stays hidden.
+
+![A sauce session: a secret declared in Nix, then generate, set with an expiry date, rotate, and the padded files](docs/demo.gif)
 
 Declare a secret next to the service that uses it:
 
@@ -16,23 +18,49 @@ sauce.secrets."github/pat" = { };
 ```
 
 Then run `sauce generate`.
-It makes the values, pads them, and encrypts each one for the hosts that use it and for nobody else.
+It makes the values, pads them, and encrypts each one for the hosts that use it and for your admin keys.
 
-`sauce search` lists every secret and never prints one.
+## Add to a flake
 
-None of this is built yet.
-The design is in [`spec/`](spec/).
+Add the input and import `nixosModules.default` in each machine.
+
+```nix
+{
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+  inputs.sauce.url = "github:v3xlabs/secret-sauce";
+
+  outputs = { nixpkgs, sauce, ... }: {
+    nixosConfigurations.notes = nixpkgs.lib.nixosSystem {
+      modules = [
+        ./configuration.nix
+        sauce.nixosModules.default
+        {
+          sauce = {
+            adminRecipients.age = [ "<age public key of an admin>" ];
+            # adminRecipients.pgp = [ "<GPG fingerprint of an admin>" ];
+            recipient = "<public key of this machine>";
+            identityFile = "/var/lib/sauce/host.key";
+            defaultDir = ./secrets;
+          };
+        }
+      ];
+    };
+  };
+}
+```
+
+## Commands
+
+`list`, `generate`, `set`, `rotate`, `status`, `edit`, `import`, `search`, `get`
 
 ## Running sauce
 
-Run the `sauce` of the flake input that your hosts use, so that it writes files that their `sauce-install` reads.
-For an input named `sauce`, that is `nix run --inputs-from . sauce -- generate` in your flake.
-A `sauce` of a newer version can write a file that an older `sauce-install` refuses, and then the activation of that host fails.
+Run the `sauce` of the flake input that your hosts use: `nix run --inputs-from . sauce -- generate`.
+A newer `sauce` can write a file that an older `sauce-install` refuses, and then that host fails to activate.
 
 ## Independent decryption
 
-Run `python tools/sauce-decrypt.py secret.sauce.yaml identity.key --name secret/name` to open a file with an age X25519 identity.
-The program prints the facts and the value length.
-Add `--print` to print the value instead of its length.
+Open a file with an age X25519 identity: `python tools/sauce-decrypt.py secret.sauce.yaml identity.key --name secret/name`.
+It prints the facts and the value length, or the value with `--print`.
+It has no GPG support, so it cannot open the wrap of a GPG reader.
 The development shell provides Python and `cryptography`.
-The program has no GPG support: it skips the wrap of a GPG reader, so it opens a file with an age identity only.
