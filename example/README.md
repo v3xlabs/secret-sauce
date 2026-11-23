@@ -43,7 +43,7 @@ sauce list
 ```
 
 ```
-SECRET                     MACHINES        MADE BY               SET  EXPIRES  STATE
+NAME                       MACHINES        MADE BY               SET  EXPIRES  STATE
 backup/ssh-key             backup,offsite  ssh-ed25519                         ✗
 ddclient/api-token         notes           set                                 ✗
 hedgedoc/db-password       notes           alphanum, 40<48                     ✗
@@ -62,6 +62,8 @@ Without a key that can read the facts, `SET` and `EXPIRES` stay empty.
 If the key file is found but none of its keys can read the secrets, `sauce list` and `sauce status` report the file once.
 Use `--identity <key-file>` to pick another key.
 Set `NO_COLOR` to turn off terminal colors.
+On a terminal, `sauce list` colors the folder of each name, such as `backup/`, in blue, magenta or cyan.
+The color comes from the folder text, so a folder has the same color on every run.
 
 A command that takes longer than a moment shows its current step on one line of stderr, such as `⠋ Evaluating machines…`.
 The line shows only when stdout and stderr are terminals and `TERM` is not `dumb`, and sauce erases it before it prints a result, an error or a prompt.
@@ -155,7 +157,7 @@ sauce list
 ```
 
 ```
-SECRET                     MACHINES        MADE BY               SET    EXPIRES  STATE
+NAME                       MACHINES        MADE BY               SET    EXPIRES  STATE
 backup/ssh-key             backup,offsite  ssh-ed25519           today           ✓
 ddclient/api-token         notes           set                   today  in 178d  ✓
 hedgedoc/db-password       notes           alphanum, 40<48       today           ✓

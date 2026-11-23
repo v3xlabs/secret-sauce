@@ -38,7 +38,7 @@ use crate::{
     status::{Evaluator, Expiry, FactDates, StatusError},
 };
 
-const HEADER: [&str; 6] = ["SECRET", "MACHINES", "MADE BY", "SET", "EXPIRES", "STATE"];
+const HEADER: [&str; 6] = ["NAME", "MACHINES", "MADE BY", "SET", "EXPIRES", "STATE"];
 
 /// Keeps the secrets of NixOS machines in git.
 #[derive(Parser)]
@@ -292,9 +292,12 @@ fn list(
             Mark::Warning | Mark::NoReader => ("⚠", Color::Yellow),
             Mark::Missing => ("✗", Color::Red),
         };
+        let name_padding = name_width - name.len();
         write!(
             text,
-            "{name:name_width$}  {machines:machines_width$}  {made_by:made_by_width$}  {set:set_width$}  "
+            "{}{:name_padding$}  {machines:machines_width$}  {made_by:made_by_width$}  {set:set_width$}  ",
+            palette.name(&name),
+            ""
         )?;
         let padding = expires_width - expires.len();
         if let Some(expiry_color) = expiry_color {

@@ -272,7 +272,7 @@
                 sauce list --manifest ${manifests} 2> "$TMPDIR/stderr" | tee $out
                 grep -F 'are not checked, because no private key of an admin is set' "$TMPDIR/stderr"
                 test "$(tail -n +2 $out | wc -l)" -eq 8
-                grep -E '^SECRET +MACHINES +MADE BY +SET +EXPIRES +STATE$' $out
+                grep -E '^NAME +MACHINES +MADE BY +SET +EXPIRES +STATE$' $out
                 grep -E '^backup/ssh-key +backup,offsite +ssh-ed25519 +✗$' $out
                 grep -E '^ddclient/api-token +notes +set +✗$' $out
                 grep -E '^hedgedoc/db-password +notes +alphanum, 40<48 +✗$' $out
@@ -290,6 +290,10 @@
 
                 sauce list $flags 2> /dev/null | tee without
                 [[ $(grep -c '✓$' without) -eq 8 ]]
+                printf '%s\n' \
+                  'NAME                       MACHINES        MADE BY               SET  EXPIRES  STATE' \
+                  'backup/ssh-key             backup,offsite  ssh-ed25519                         ✓' \
+                  | cmp - <(head -n 2 without)
                 grep -E '^ddclient/api-token +notes +set +✓$' without
 
                 SAUCE_IDENTITY=example/snakeoil/admin.key sauce list $flags 2> stderr | tee with
@@ -349,6 +353,13 @@
                 if sauce generate > /dev/null 2> failed; then exit 1; fi
                 grep -F '"broken"' failed
                 test ! -e fixture.sauce.yaml
+                printf 'false\n' > broken.nix
+                printf '"db"\n' > declaration.nix
+                sauce list > short 2> /dev/null
+                printf '%s\n' \
+                  'NAME  MACHINES  MADE BY         SET  EXPIRES  STATE' \
+                  'db    fixture   once hex, 16 B                ✗' \
+                  | cmp - short
               '';
           generate =
             pkgs.runCommand "sauce-generate"
