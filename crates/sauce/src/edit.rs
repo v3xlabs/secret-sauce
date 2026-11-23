@@ -11,6 +11,7 @@ use std::{
 use sauce::format::{self, Date, Facts, Name, NameError, Value};
 
 use crate::{
+    certificate::{self, Certificate},
     generate, gpg,
     identity::{Admin, IdentityError, OpenError},
     make::{Recipe, RecipeError},
@@ -334,6 +335,7 @@ fn edit_one(
             .checked_add(1)
             .ok_or_else(|| EditError::Version(name.clone()))?,
         set: Date::today(),
+        expires: certificate::expires(new.expose(), bound).map_or(facts.expires, Certificate::date),
         generator: None,
         revoke: false,
         ..facts

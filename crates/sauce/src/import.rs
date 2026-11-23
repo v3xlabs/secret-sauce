@@ -16,6 +16,7 @@ use serde::de::{Deserialize, Deserializer, MapAccess, Visitor};
 use zeroize::Zeroizing;
 
 use crate::{
+    certificate::{self, Certificate},
     generate, gpg,
     make::Recipe,
     manifest::{Machines, RuleError, Secret},
@@ -370,7 +371,7 @@ fn step<'a>(
         version: 1,
         set: Date::today(),
         issued: None,
-        expires: None,
+        expires: certificate::expires(value.expose(), bound).and_then(Certificate::date),
         generator: None,
         formerly: Vec::new(),
         revoke: false,

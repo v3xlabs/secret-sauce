@@ -1,3 +1,4 @@
+mod certificate;
 mod clipboard;
 mod color;
 mod edit;

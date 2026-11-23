@@ -6,6 +6,7 @@ use std::{
 use sauce::format::{self, Date, Facts, Name, NameError, Value};
 
 use crate::{
+    certificate::{self, Certificate},
     generate::{self, ReaderChange},
     gpg,
     identity::{Admin, IdentityError, OpenError},
@@ -143,7 +144,9 @@ pub fn set(
         version: old.as_ref().map_or(1, |((_, old), _)| old.version + 1),
         set: Date::today(),
         issued: dates.issued,
-        expires: dates.expires,
+        expires: dates
+            .expires
+            .or_else(|| certificate::expires(value.expose(), bound).and_then(Certificate::date)),
         generator: None,
         formerly: old.map(|((_, old), _)| old.formerly).unwrap_or_default(),
         revoke,

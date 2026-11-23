@@ -288,7 +288,11 @@ When a host is compromised or retired, the useful question is what its key could
 It lists every secret that was ever encrypted for the key, and splits the list into those `sauce` can rotate for you and those you must replace by hand.
 
 `sauce` also keeps an expiry date where there is one.
-You give it with `sauce set --expires`, you change or clear it with `sauce expire <name> <date>` or `sauce expire <name> --clear`, and for a certificate `sauce` reads it from the certificate.
+You give it with `sauce set --expires`, you change or clear it with `sauce expire <name> <date>` or `sauce expire <name> --clear`, and for a certificate `sauce set`, `sauce edit` and `sauce import` read it from the certificate: the `notAfter` of a PEM X.509 certificate, or of the first certificate of a bundle, unless you give `--expires`.
+`sauce` reads a certificate with the `x509-cert` crate, and a value that it cannot decode gives no date.
+A known limit: in `der` 0.7, a length inside a malformed certificate that claims more bytes than there are can make one `sauce` command allocate that much and abort, and nothing leaks.
+Only someone who can already write secrets can give such a value, and the value is at most the bound of the secret.
+`x509-cert` also refuses a certificate with a `notBefore` or `notAfter` before 1970, so such a certificate gives no date.
 `sauce status` warns before the date.
 
 ## What it is not

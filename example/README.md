@@ -111,6 +111,13 @@ When the machines declare other readers than the file has, `sauce set` lists the
 With the value on a pipe there is no question, so `--yes` approves the change.
 A key that loses access while the value stays the same marks the secret `revoke`.
 
+When the value is a PEM certificate, `sauce set`, `sauce edit` and `sauce import` take its `notAfter` as the expiry date, so `--expires` is for a token.
+`sauce set --expires` wins over the date of a certificate.
+A bundle gives the date of its first certificate, and a value that is no certificate gets no date from `sauce`.
+`sauce edit` keeps the old date when the new value is no certificate.
+A certificate whose `notAfter` is the `GeneralizedTime` `99991231235959Z`, which says that it never ends, gives no date, and `sauce edit` clears the old date for it.
+A certificate with a `notBefore` or a `notAfter` before 1970 cannot be decoded, and it gives no date.
+
 Look at the secret.
 
 ```sh

@@ -97,6 +97,43 @@
                 }).config.sauce.manifest
               else manifest name) exampleFlake.nixosConfigurations)
             );
+          # Self-signed certificates that end in 2031, 2033 and 2099, and one that never ends, made here with fixed inputs so that the bytes repeat.
+          # The key of each is made from its name, the serial number is fixed, and Ed25519 signs without a random number.
+          # Python writes a year from 2050 on as a GeneralizedTime and the other years as a UTCTime.
+          certificates =
+            pkgs.runCommand "certificates"
+              { nativeBuildInputs = [ (pkgs.python3.withPackages (ps: [ ps.cryptography ])) ]; }
+              ''
+                mkdir $out
+                python - <<'EOF'
+                import datetime, hashlib, os
+                from cryptography import x509
+                from cryptography.hazmat.primitives import serialization
+                from cryptography.hazmat.primitives.asymmetric import ed25519
+                from cryptography.x509.oid import NameOID
+
+                def make(name, not_after):
+                    key = ed25519.Ed25519PrivateKey.from_private_bytes(hashlib.sha256(name.encode()).digest())
+                    subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, name)])
+                    certificate = (
+                        x509.CertificateBuilder()
+                        .subject_name(subject)
+                        .issuer_name(subject)
+                        .public_key(key.public_key())
+                        .serial_number(1)
+                        .not_valid_before(datetime.datetime(2025, 1, 1))
+                        .not_valid_after(not_after)
+                        .sign(key, None)
+                    )
+                    with open(os.path.join(os.environ["out"], name + ".pem"), "wb") as file:
+                        file.write(certificate.public_bytes(serialization.Encoding.PEM))
+
+                make("first", datetime.datetime(2031, 3, 4, 12, 30, 45))
+                make("second", datetime.datetime(2033, 5, 6, 12, 30, 45))
+                make("late", datetime.datetime(2099, 6, 7, 12, 30, 45))
+                make("never", datetime.datetime(9999, 12, 31, 23, 59, 59))
+                EOF
+              '';
           # `offsite` also reads `ddclient/api-token`, so a `sauce generate` back to `manifests` marks it `revoke`.
           widerManifests = pkgs.writeText "manifests.json" (
             builtins.toJSON (
@@ -508,6 +545,50 @@
                 grep -F '4096' error
                 head -c 4096 /dev/zero | tr '\0' a | sauce set ddclient/api-token $longFlags
                 [[ $(grep '^value: ' example/secrets/ddclient/api-token.sauce.yaml | cut -d' ' -f2 | base64 -d | wc -c) -eq 8208 ]]
+
+                # A certificate gives its notAfter as the expiry date, from a UTCTime and from a GeneralizedTime, unless --expires is given.
+                certs=${certificates}
+                export SAUCE_IDENTITY=$keys/admin.key
+                # The facts must open, so that an expiry that is missing is a fact and not a failed read.
+                show() { facts=$(sauce get ddclient/api-token $longFlags); grep -q '^version: ' <<< "$facts"; }
+                fact() { grep '^expires:' <<< "$facts" || true; }
+                expect() { show; [[ $(fact) == "$1" ]]; }
+                sauce set ddclient/api-token $longFlags < $certs/first.pem
+                expect 'expires: 2031-03-04'
+                sauce set ddclient/api-token $longFlags < $certs/late.pem
+                expect 'expires: 2099-06-07'
+                # The countdown is the days to the date, and the day may change between the two readings of the clock.
+                first=$(( ( $(date -u -d 2099-06-07 +%s) - $(date -u -d "$(date -u +%F)" +%s) ) / 86400 ))
+                listed=$(sauce list $longFlags | grep '^ddclient/api-token ')
+                second=$(( ( $(date -u -d 2099-06-07 +%s) - $(date -u -d "$(date -u +%F)" +%s) ) / 86400 ))
+                grep -E " in ($first|$second)d " <<< "$listed"
+                cat $certs/first.pem $certs/second.pem | sauce set ddclient/api-token $longFlags
+                expect 'expires: 2031-03-04'
+                { printf -- '-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n'; cat $certs/second.pem; } | sauce set ddclient/api-token $longFlags
+                expect 'expires: 2033-05-06'
+                sauce set ddclient/api-token $longFlags --expires 2040-01-02 < $certs/first.pem
+                expect 'expires: 2040-01-02'
+                printf 'plain text' | sauce set ddclient/api-token $longFlags
+                expect ""
+                printf -- '-----BEGIN CERTIFICATE-----\n!!\n-----END CERTIFICATE-----\n' | sauce set ddclient/api-token $longFlags
+                expect ""
+                [[ $(sauce get ddclient/api-token --print $longFlags | head -n 1) == '-----BEGIN CERTIFICATE-----' ]]
+                sauce set ddclient/api-token $longFlags < $certs/never.pem
+                expect ""
+
+                # An edit that saves a certificate takes its date, a certificate that never ends clears it, and other text keeps it.
+                mkdir -m 700 /dev/shm/run
+                export XDG_RUNTIME_DIR=/dev/shm/run
+                printf 'cat %s > "$1"\n' $certs/second.pem > certificate-editor
+                EDITOR="sh $PWD/certificate-editor" sauce edit ddclient/api-token $longFlags
+                expect 'expires: 2033-05-06'
+                echo 'printf changed > "$1"' > text-editor
+                EDITOR="sh $PWD/text-editor" sauce edit ddclient/api-token $longFlags
+                [[ $(sauce get ddclient/api-token --print $longFlags) == changed ]]
+                expect 'expires: 2033-05-06'
+                printf 'cat %s > "$1"\n' $certs/never.pem > never-editor
+                EDITOR="sh $PWD/never-editor" sauce edit ddclient/api-token $longFlags
+                expect ""
                 touch $out
               '';
           readers =
@@ -953,6 +1034,15 @@
                 cat out
                 grep -x 'error: notes: sauce.adminRecipients.age and sauce.adminRecipients.pgp are both empty, and every secret needs the key of an admin' out
                 test ! -e example/secrets/ddclient/api-token.sauce.yaml
+
+                # A certificate in a sops file gets its notAfter as the expiry date.
+                longFlags="--manifest ${longManifests}"
+                { printf 'certificate: |\n'; sed 's/^/  /' ${certificates}/first.pem; } > plain.yaml
+                sops encrypt --age "$(age-keygen -y "$SOPS_AGE_KEY_FILE")" --input-type yaml --output-type yaml plain.yaml > cert.sops.yaml
+                rm plain.yaml
+                printf '{ "certificate": "ddclient/api-token" }\n' > cert.json
+                sauce import cert.sops.yaml cert.json $longFlags
+                [[ $(sauce get ddclient/api-token $longFlags --identity $admin | grep '^expires:') == 'expires: 2031-03-04' ]]
                 touch $out
               '';
           symlink =
