@@ -624,8 +624,12 @@
                 files > before
 
                 if printf token | sauce set ddclient/api-token $wider 2> error; then exit 1; fi
-                grep -E '^  ddclient/api-token  gets offsite age1[a-z0-9]+$' error
-                grep -F -- '--yes' error
+                diff - error <<'EOF'
+                These readers change. A key that gets access learns a value that exists:
+                  offsite (age) age1gxja8jf28w6scdug3ncevhr929uht3qggyhuptedv7sghn52ug4sqzqgt8  gets 1
+                    └─ ddclient/api-token
+                error: reader changes not approved; no files changed, and --yes approves them with no terminal
+                EOF
                 diff before <(files)
                 if script -qec "sauce set ddclient/api-token $wider" /dev/null <<< n > refused; then exit 1; fi
                 grep -F 'Encrypt the value for these readers? [y/N]' refused
@@ -636,7 +640,11 @@
                 [[ $(sauce get ddclient/api-token --print $wider --identity example/snakeoil/offsite.key) == token ]]
 
                 printf token | sauce set ddclient/api-token --yes $flags 2> error > out
-                grep -E '^  ddclient/api-token  loses offsite age1[a-z0-9]+$' error
+                diff - error <<'EOF'
+                These readers change. A key that gets access learns a value that exists:
+                  offsite (age) age1gxja8jf28w6scdug3ncevhr929uht3qggyhuptedv7sghn52ug4sqzqgt8  loses 1
+                    └─ ddclient/api-token
+                EOF
                 grep -x 'ddclient/api-token is marked revoke, because the value is the same and a former reader knows it' out
                 sauce get ddclient/api-token $flags | grep -x 'revoke: a former reader knows this value'
 
