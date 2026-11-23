@@ -306,27 +306,8 @@ impl Definition {
 }
 
 impl Secret<'_> {
-    /// The file of the secret in `root`, refused when a folder between `root` and the file is a symbolic link, because a write would land where the link points.
-    ///
-    /// A folder that becomes a link after this check still takes the write where it points.
     pub fn path(&self, name: &Name, root: &Path) -> Result<PathBuf, FolderError> {
-        let file = &self.definition.file;
-        let mut folder = root.to_path_buf();
-        for part in file.parent().into_iter().flat_map(Path::components) {
-            folder.push(part);
-            match fs::symlink_metadata(&folder) {
-                Ok(metadata) if metadata.is_symlink() => {
-                    return Err(FolderError::Link {
-                        name: name.clone(),
-                        folder,
-                    });
-                }
-                Ok(_) => {}
-                Err(error) if error.kind() == io::ErrorKind::NotFound => break,
-                Err(source) => return Err(FolderError::Read { folder, source }),
-            }
-        }
-        Ok(root.join(file))
+        checked_path(name, &self.definition.file, root)
     }
 }
 
@@ -559,6 +540,28 @@ pub fn source_root(flake: &Path) -> &Path {
         .ancestors()
         .find(|dir| dir.join(".git").exists())
         .unwrap_or(flake)
+}
+
+/// `file` in `root`, refused when a folder between `root` and the file is a symbolic link, because a write would land where the link points.
+///
+/// A folder that becomes a link after this check still takes the write where it points.
+pub fn checked_path(name: &Name, file: &Path, root: &Path) -> Result<PathBuf, FolderError> {
+    let mut folder = root.to_path_buf();
+    for part in file.parent().into_iter().flat_map(Path::components) {
+        folder.push(part);
+        match fs::symlink_metadata(&folder) {
+            Ok(metadata) if metadata.is_symlink() => {
+                return Err(FolderError::Link {
+                    name: name.clone(),
+                    folder,
+                });
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => break,
+            Err(source) => return Err(FolderError::Read { folder, source }),
+        }
+    }
+    Ok(root.join(file))
 }
 
 /// Checks that each file of a secret stays in the source root, and that no two files clash.

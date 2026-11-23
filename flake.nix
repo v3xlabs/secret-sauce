@@ -107,6 +107,21 @@
               }
             )
           );
+          # `notes` declares none of `sso/miniflux`, `ddclient/api-token` and `hedgedoc/session-secret`, so their files are left over.
+          leftoverManifests = pkgs.writeText "leftover-manifests.json" (
+            builtins.toJSON (
+              lib.mapAttrs (name: _: manifest name) example
+              // {
+                notes = manifest "notes" // {
+                  secrets = removeAttrs (manifest "notes").secrets [
+                    "sso/miniflux"
+                    "ddclient/api-token"
+                    "hedgedoc/session-secret"
+                  ];
+                };
+              }
+            )
+          );
 
           facts = [
             {
@@ -360,6 +375,19 @@
                   'NAME  MACHINES  MADE BY         SET  EXPIRES  STATE' \
                   'db    fixture   once hex, 16 B                ✗' \
                   | cmp - short
+
+                # The flake of a dry run has an input that needs a lock file, which a run that removes writes and a dry run leaves out.
+                mkdir "$TMPDIR/dep"
+                printf '{ outputs = _: { }; }\n' > "$TMPDIR/dep/flake.nix"
+                sed -i "s|outputs = { self }:|inputs.dep.url = \"path:$TMPDIR/dep\"; outputs = { self, ... }:|" flake.nix
+                git add flake.nix
+                cp "$TMPDIR/checkout/example/secrets/sso/miniflux.sauce.yaml" leftover.sauce.yaml
+                sauce remove sso/miniflux --dry-run | grep -F leftover.sauce.yaml
+                test ! -e flake.lock
+                test -e leftover.sauce.yaml
+                sauce remove sso/miniflux --yes
+                test -e flake.lock
+                test ! -e leftover.sauce.yaml
               '';
           generate =
             pkgs.runCommand "sauce-generate"
@@ -625,6 +653,73 @@
                   exit 1
                 fi
                 [[ -z $copied ]]
+
+                leftover="--manifest ${leftoverManifests}"
+                files > before
+                if sauce remove restic/password --yes $flags 2> error; then
+                  exit 1
+                fi
+                grep -F restic/password error
+                grep -F notes error
+                grep -F offsite error
+                diff before <(files)
+                sauce remove 'sso/*' --dry-run $leftover | tee preview
+                grep -F example/secrets/sso/miniflux.sauce.yaml preview
+                if grep -F hedgedoc.sauce.yaml preview; then
+                  exit 1
+                fi
+                diff before <(files)
+
+                # A file that changes while the question is open stops the removal there, and the error names it and every file removed before it.
+                for name in ddclient/api-token hedgedoc/session-secret sso/miniflux; do
+                  cp example/secrets/$name.sauce.yaml "$TMPDIR/$(basename $name).bak"
+                done
+                status=0
+                {
+                  if timeout 30 sh -c 'until grep -qF "Remove them?" asked; do sleep 0.1; done'; then
+                    printf x > example/secrets/sso/miniflux.sauce.yaml
+                    echo y
+                  else
+                    echo n
+                  fi
+                } | timeout 120 script -qec "sauce remove '*/*' $leftover" /dev/null > asked 2>&1 || status=$?
+                [[ $status -eq 1 ]]
+                test ! -e example/secrets/ddclient/api-token.sauce.yaml
+                test ! -e example/secrets/hedgedoc/session-secret.sauce.yaml
+                test -e example/secrets/sso/miniflux.sauce.yaml
+                stopped=$(grep '^error:' asked)
+                [[ $stopped != *'nothing was removed'* ]]
+                at=''${stopped%%removed*}
+                earlier=''${stopped#*removed}
+                [[ $at == *example/secrets/sso/miniflux.sauce.yaml* && $at != *ddclient* && $at != *session-secret* ]]
+                [[ $earlier == *example/secrets/ddclient/api-token.sauce.yaml* && $earlier == *example/secrets/hedgedoc/session-secret.sauce.yaml* ]]
+                for name in ddclient/api-token hedgedoc/session-secret sso/miniflux; do
+                  cp "$TMPDIR/$(basename $name).bak" example/secrets/$name.sauce.yaml
+                done
+                diff before <(files)
+                if sauce remove ddclient/api-token $leftover < /dev/null 2> error; then
+                  exit 1
+                fi
+                grep -F -- '--yes' error
+                diff before <(files)
+                if script -qec "sauce remove ddclient/api-token $leftover" /dev/null <<< n; then
+                  exit 1
+                fi
+                diff before <(files)
+                script -qec "sauce remove ddclient/api-token $leftover" /dev/null <<< y
+                test ! -e example/secrets/ddclient/api-token.sauce.yaml
+                sauce remove 'sso/*' --yes $leftover
+                test ! -e example/secrets/sso/miniflux.sauce.yaml
+                test -e example/secrets/sso/hedgedoc.sauce.yaml
+
+                mkdir "$TMPDIR/outside"
+                mv example/secrets/hedgedoc/session-secret.sauce.yaml "$TMPDIR/outside"
+                ln -s "$TMPDIR/outside" example/secrets/hedgedoc/linked
+                sum=$(sha256sum < "$TMPDIR/outside/session-secret.sauce.yaml")
+                if sauce remove hedgedoc/session-secret --yes $leftover; then
+                  exit 1
+                fi
+                [[ $(sha256sum < "$TMPDIR/outside/session-secret.sauce.yaml") == "$sum" ]]
                 touch $out
               '';
           import =

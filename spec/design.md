@@ -126,6 +126,7 @@ It shows what it is about to do and asks first.
 `sauce set <name>` takes a value from a hidden prompt.
 `sauce edit 'asterisk/*'` opens only the matching secrets in `$EDITOR`, not the whole lot.
 `sauce rename` moves a secret and tells you which lines of Nix still use the old name.
+`sauce remove <name>` deletes the file of a secret that no machine declares anymore, so the declaration goes first.
 
 `sauce import config/voice.sops.yaml config/voice.import.json` moves values out of a sops file.
 The mapping file is a JSON object from each top-level key of the sops file to the name of a secret, such as `{ "voice_turn": "voice/turn" }`, so the mapping is readable in the PR that adds it.

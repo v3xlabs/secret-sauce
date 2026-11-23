@@ -274,6 +274,25 @@ It refuses to start when that folder is not in memory.
 Use an editor that does not persist value contents or print them outside its editor view.
 Turn off swap, backup, and undo files that the editor may keep outside the runtime folder.
 
+Remove the file of a secret after you remove its declaration from Nix, such as the made-up `old/api-token` here.
+
+```sh
+sauce remove old/api-token
+```
+
+```
+These files get removed:
+  old/api-token (example/secrets/old/api-token.sauce.yaml)
+Remove them? [y/N] y
+removed old/api-token (example/secrets/old/api-token.sauce.yaml)
+```
+
+`sauce remove` refuses a secret that a machine still declares, and names the machines.
+It takes a name or a quoted pattern, as `sauce rotate` does, and a pattern skips the secrets that a machine declares.
+It removes a file that `sauce status` lists as `no machine declares it`, unless a machine declares the name in that file at another path.
+It needs no key, and it asks on a terminal.
+Without a terminal it needs `--yes`, and `--dry-run` lists the files and removes none.
+
 Copy a value to paste it somewhere.
 
 ```sh

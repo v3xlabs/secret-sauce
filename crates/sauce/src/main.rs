@@ -10,6 +10,7 @@ mod import;
 mod make;
 mod manifest;
 mod manifest_cache;
+mod remove;
 mod rotate;
 mod search;
 mod set;
@@ -107,6 +108,19 @@ enum Command {
         source: Source,
         #[command(flatten)]
         identity: Identity,
+    },
+    /// Delete the .sauce.yaml file of a secret that no machine declares, and ask first on a terminal.
+    Remove {
+        /// A name, or a quoted pattern where `*` stands for any text, such as 'sso/*'.
+        pattern: String,
+        /// List the files that would be removed, and remove nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Remove with no question, which a command without a terminal needs.
+        #[arg(long)]
+        yes: bool,
+        #[command(flatten)]
+        source: Source,
     },
     /// List what needs attention, one row for each problem, and with the private key of an admin also expiry and revoke.
     Status {
@@ -435,6 +449,20 @@ fn run(command: Command) -> Result<ExitCode, Box<dyn Error>> {
                 &pattern,
                 identity.file.as_deref(),
             )?)
+        }
+        Command::Remove {
+            pattern,
+            dry_run,
+            yes,
+            source,
+        } => {
+            let evaluate = if dry_run {
+                Machines::eval_read_only
+            } else {
+                Machines::eval
+            };
+            let (machines, root) = source.load(evaluate)?;
+            Ok(remove::remove(&machines, &root, &pattern, dry_run, yes)?)
         }
         Command::Status { source, identity } => {
             let (machines, root) = source.load_read()?;

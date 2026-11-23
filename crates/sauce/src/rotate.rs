@@ -1,5 +1,5 @@
 use std::{
-    fs,
+    fmt, fs,
     io::{self, BufRead as _, Write as _},
     path::{Path, PathBuf},
 };
@@ -117,7 +117,10 @@ pub fn rotate(
         if rotations.is_empty() {
             return Ok(());
         }
-        if !confirm(&rotations).map_err(RotateError::Prompt)? {
+        let names = rotations.iter().map(|rotation| rotation.name);
+        if !confirm("These secrets get a new value:", names, "Rotate them?")
+            .map_err(RotateError::Prompt)?
+        {
             return Err(RotateError::NotConfirmed);
         }
     } else {
@@ -201,13 +204,17 @@ fn install(outputs: &[(PathBuf, String)]) -> Result<(), RotateError> {
     Ok(())
 }
 
-fn confirm(rotations: &[Rotation<'_>]) -> io::Result<bool> {
+pub fn confirm(
+    intro: &str,
+    items: impl IntoIterator<Item = impl fmt::Display>,
+    question: &str,
+) -> io::Result<bool> {
     let mut stderr = io::stderr().lock();
-    writeln!(stderr, "These secrets get a new value:")?;
-    for rotation in rotations {
-        writeln!(stderr, "  {}", rotation.name)?;
+    writeln!(stderr, "{intro}")?;
+    for item in items {
+        writeln!(stderr, "  {item}")?;
     }
-    write!(stderr, "Rotate them? [y/N] ")?;
+    write!(stderr, "{question} [y/N] ")?;
     stderr.flush()?;
     let mut answer = String::new();
     io::stdin().lock().read_line(&mut answer)?;

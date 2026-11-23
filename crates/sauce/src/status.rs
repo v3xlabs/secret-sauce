@@ -276,7 +276,9 @@ pub fn status(
             .map(|secret| root.join(&secret.definition.file))
             .collect();
         let mut files = Vec::new();
-        sauce_files(root, &mut files, &mut rows);
+        let mut unreadable = Vec::new();
+        sauce_files(root, &mut files, &mut unreadable);
+        rows.extend(unreadable.into_iter().map(unreadable_row));
         for path in files.into_iter().filter(|path| !declared.contains(path)) {
             let shown = path
                 .strip_prefix(root)
@@ -339,18 +341,25 @@ fn warn_unchecked() {
     );
 }
 
+fn unreadable_row((folder, error): (PathBuf, io::Error)) -> Row {
+    Row::warning(
+        folder.display().to_string(),
+        format!(
+            "cannot be read, so a .sauce.yaml file in it can be missing from this list: {error}"
+        ),
+    )
+}
+
 /// Collects every `.sauce.yaml` file under `folder`, and skips hidden folders and symbolic links.
-/// A folder that cannot be read becomes a row, and the walk goes on.
-fn sauce_files(folder: &Path, files: &mut Vec<PathBuf>, rows: &mut Vec<Row>) {
+pub fn sauce_files(
+    folder: &Path,
+    files: &mut Vec<PathBuf>,
+    unreadable: &mut Vec<(PathBuf, io::Error)>,
+) {
     let entries = match fs::read_dir(folder) {
         Ok(entries) => entries,
         Err(error) => {
-            rows.push(Row::warning(
-                folder.display().to_string(),
-                format!(
-                    "cannot be read, so a .sauce.yaml file in it can be missing from this list: {error}"
-                ),
-            ));
+            unreadable.push((folder.to_owned(), error));
             return;
         }
     };
@@ -360,7 +369,7 @@ fn sauce_files(folder: &Path, files: &mut Vec<PathBuf>, rows: &mut Vec<Row>) {
             continue;
         };
         if kind.is_dir() && !entry.file_name().to_string_lossy().starts_with('.') {
-            sauce_files(&path, files, rows);
+            sauce_files(&path, files, unreadable);
         } else if kind.is_file() && format::has_suffix(&path) {
             files.push(path);
         }
