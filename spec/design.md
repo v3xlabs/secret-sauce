@@ -236,7 +236,6 @@ You should never depend on `sauce` alone to get your secrets back.
 
 `sauce` encrypts to age keys, to GPG keys, or to a mix of both.
 Each host has a key of its own, and you have one or more for yourself.
-Hardware keys work through age plugins.
 
 You list your own keys by type: age recipients in `sauce.adminRecipients.age`, and the fingerprints of GPG keys in `sauce.adminRecipients.pgp`.
 A GPG fingerprint is the one of a primary key or of a subkey, so a bare fingerprint from your `.sops.yaml` works as it is.
@@ -247,6 +246,7 @@ A fingerprint that is not in the keyring of gpg stops every write with an error 
 A subkey that gpg cannot encrypt to, such as an expired one, stops it with an error that gives the reason of gpg, and says to replace the subkey or, if its whole certificate may read, to check its primary fingerprint and use that.
 A certificate with an additional decryption subkey makes gpg write for a second key, and `sauce` refuses that wrap, so a write for it stops with an error.
 Post-quantum and plugin keys go in `.age` too, because age tells the kinds apart by their prefix.
+Only X25519 age recipients work, and a write refuses a post-quantum or plugin age key, while GPG keys work as below.
 A key in the wrong list fails the evaluation, and so does a machine with both lists empty.
 `sauce` finds your own age key from the sources that sops reads, and unlike sops, which collects the keys of all its sources, it uses the first source that is set: `--identity` or `SAUCE_IDENTITY`, then `SOPS_AGE_KEY`, `SOPS_AGE_KEY_FILE`, the output of the command in `SOPS_AGE_KEY_CMD`, and the sops key file in `XDG_CONFIG_HOME` or `~/.config`.
 An empty `SOPS_AGE_KEY` or `SOPS_AGE_KEY_CMD` counts as not set.
@@ -261,7 +261,7 @@ A card costs one operation for each file that `sauce` opens with it, so with a t
 When you list both the primary and a subkey fingerprint of one key, the second entry can start another try if the first does not open the file.
 Hosts never need gpg, because they read with their age keys.
 
-Post-quantum age keys work the same way.
+Post-quantum age keys do not work today.
 Moving to them later is a re-encrypt, not a new file format.
 One rule applies: the age readers of a single secret move together, because age does not allow post-quantum and classical keys on the same file.
 

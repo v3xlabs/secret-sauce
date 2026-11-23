@@ -100,7 +100,8 @@ The size of `facts` shows nothing, except that a secret has many or long former 
 A `.sauce.yaml` file follows age where it can.
 
 - Each write makes a new 16-byte file key from a cryptographic random number generator, as age does.
-- `sauce` wraps the file key for each reader with the age library, as age does in its header, so classical, post-quantum and plugin keys work as they do in age.
+- `sauce` wraps the file key for each age reader with the age library, as age does in its header.
+  Only age X25519 recipients work, and a write refuses a post-quantum or plugin age key.
   For a GPG key, gpg encrypts the file key, with no compression, to the public key of that fingerprint in the keyring of the writer, and for a subkey to that subkey alone.
   The message is one public-key encrypted session key packet and then one integrity protected encrypted data packet, and a reader refuses any other packets before it runs gpg.
   The encrypted data holds the 16 bytes of the file key with no literal data packet around them, and a reader takes them with `gpg --unwrap` and refuses any other length, so gpg reads no packet inside the message.
@@ -147,7 +148,7 @@ Anybody with the repository and no key sees these.
 
 - `name`, and so which secrets exist.
 - The `for` and the public key of each reader, and so which hosts read which secret.
-- The number and the types of the stanzas, and so whether a reader uses a post-quantum key.
+- The number and the types of the stanzas.
 - The fingerprint of each GPG reader, and the key ID of its encryption subkey in the wrap.
 - The steps of `value` and of `facts`.
 - `commitment`, which changes with each write and shows nothing about the secret.

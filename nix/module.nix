@@ -278,6 +278,8 @@ let
         ramfs) echo "reboot to move ${link}.d to a tmpfs" >&2; exit 1 ;;
         *) echo "${link}.d is a mount of $fstype, and sauce-install needs a tmpfs there" >&2; exit 1 ;;
       esac
+      # A core dump of sauce-install would hold the values it decrypted; systemd-coredump also stores none at a limit of zero.
+      ulimit -c 0
       ${pkgs.callPackage ./sauce-install.nix { }}/bin/sauce-install ${json}
     '';
 

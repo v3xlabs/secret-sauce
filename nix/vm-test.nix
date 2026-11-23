@@ -184,5 +184,32 @@ pkgs.testers.runNixOSTest {
           notes.succeed("journalctl -u sauce-install.service | grep -F '/run/sauce.d is full'")
           assert read("/run/sauce/sso/hedgedoc") == "${values."sso/hedgedoc"}"
           notes.succeed("rm /run/sauce.d/filler")
+
+      with subtest("a crash of sauce-install leaves no core dump"):
+          # systemd sets fs.suid_dumpable to 2, which only applies to a process that the kernel marks dumpable for root, so it does not undo PR_SET_DUMPABLE.
+          assert notes.succeed("sysctl -n fs.suid_dumpable").strip() == "2"
+          # A crashed sleep shows that systemd-coredump keeps the dump of a process that allows one.
+          sleep = notes.succeed("sleep 100 > /dev/null 2>&1 & echo $!").strip()
+          notes.succeed(f"kill -SEGV {sleep}")
+          notes.wait_until_succeeds("coredumpctl --no-pager list sleep")
+          # The config is a FIFO with no writer, so sauce-install waits there after it turned off its dumps.
+          # It runs as nobody, because /proc/<pid> of a process that is not dumpable belongs to root.
+          notes.succeed("mkfifo -m 666 /tmp/config")
+          pid = notes.succeed(
+              "setpriv --reuid=nobody --regid=nogroup --clear-groups "
+              "${pkgs.callPackage ./sauce-install.nix { }}/bin/sauce-install /tmp/config < /dev/null > /dev/null 2>&1 & echo $!"
+          ).strip()
+          notes.wait_until_succeeds(f"grep -E '^Max core file size +0 +0 ' /proc/{pid}/limits")
+          assert notes.succeed(f"stat -c %U /proc/{pid}/status").strip() == "root"
+          # Rust catches the first SIGSEGV for its stack guard, and SIGABRT dumps core at once.
+          notes.succeed(f"kill -ABRT {pid}")
+          # The shell of the test reaps it late, so a zombie counts as gone, and the kernel runs any core handler before that.
+          notes.wait_until_succeeds(f"! test -e /proc/{pid} || grep -q '^State:.*zombie' /proc/{pid}/status", timeout=60)
+          # A second crashed sleep marks a point in the journal after any handler of the first crash has logged.
+          marker = notes.succeed("sleep 100 > /dev/null 2>&1 & echo $!").strip()
+          notes.succeed(f"kill -SEGV {marker}")
+          notes.wait_until_succeeds(f"journalctl -t systemd-coredump --no-pager | grep -F 'Process {marker} (sleep)'")
+          notes.fail(f"journalctl -t systemd-coredump --no-pager | grep -F 'Process {pid} '")
+          notes.fail("coredumpctl --no-pager list sauce-install")
     '';
 }

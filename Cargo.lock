@@ -1293,6 +1293,7 @@ name = "sauce-install"
 version = "0.1.0"
 dependencies = [
  "age",
+ "libc",
  "sauce",
  "serde",
  "serde_json",
