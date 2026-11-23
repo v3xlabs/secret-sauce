@@ -2,9 +2,9 @@
 
 ![](docs/demo.gif)
 
-Alternative to [sops](sops) & [sops-nix](sops-nix) with support for programmatic generation, length-obfuscation through padding, selective rotation, lifecycle tracking, a nicer editing experience, and [NixOS](nixos) integration with the local homelab-er and fleet-control in mind.
+Alternative to [sops](^sops) & [sops-nix](^sops-nix) with support for programmatic generation, length-obfuscation through padding, selective rotation, lifecycle tracking, a nicer editing experience, and [NixOS](^nixos) integration with the local homelab-er and fleet-control in mind.
 
-`secret-sauce` is built on the shoulders of giants ([sops](sops), [sops-nix](sops-nix), [age](age), [ssh-to-age](ssh-to-age), [pgp](pgp), and many more). Familiarity with any of the aforementioned makes this easy.
+`secret-sauce` is built on the shoulders of giants ([sops](^sops), [sops-nix](^sops-nix), [age](^age), [ssh-to-age](^ssh-to-age), [pgp](^pgp), and many more). Familiarity with any of the aforementioned makes this easy.
 
 ## Quickstart
 
@@ -20,13 +20,14 @@ Or by flake
 inputs.sauce.url = "github:v3xlabs/secret-sauce";
 ```
 
-A lot of the `sauce` nix configuration syntax follows or is similar to the [sops-nix](sops-nix) counterpart.
+A lot of the `sauce` nix configuration syntax follows or is similar to the [sops-nix](^sops-nix) counterpart.
 
 ### Declare a secret
 
 Secrets can be declared wherever you like, allowing you to organize your dotfiles in whatever way makes sense for you.
 
 The `generator` field can be defined, for variables that can be rotated, think passwords, api-keys, most things:
+
 ```nix
 sauce.secrets."kanidm/oauth2/freshrss" {
   generator = {
@@ -39,6 +40,7 @@ sauce.secrets."kanidm/oauth2/freshrss" {
 
 The `once` field is similar to `generator` however only applied if no value exists; `once` is intended for use for disk-encryption, salts, etc.
 Any values which if rotated would result in data-loss.
+
 ```nix
 sauce.secrets."litellm/salt-key" = {
   once = {
@@ -50,6 +52,7 @@ sauce.secrets."litellm/salt-key" = {
 ```
 
 If no `generator` or `once` is defined a variable 
+
 ```nix
 sauce.secrets."github/pat" = { };
 ```
@@ -93,8 +96,8 @@ It prints the facts and the value length, or the value with `--print`.
 It has no GPG support, so it cannot open the wrap of a GPG reader.
 The development shell provides Python with `cryptography` and `bech32`.
 
-[sops]: https://github.com/getsops/sops
-[sops-nix]: https://github.com/Mic92/sops-nix
-[age]: https://github.com/FiloSottile/age
-[ssh-to-age]: https://github.com/Mic92/ssh-to-age
-[pgp]: https://en.wikipedia.org/wiki/Pretty_Good_Privacy
+[^sops]: https://github.com/getsops/sops
+[^sops-nix]: https://github.com/Mic92/sops-nix
+[^age]: https://github.com/FiloSottile/age
+[^ssh-to-age]: https://github.com/Mic92/ssh-to-age
+[^pgp]: https://en.wikipedia.org/wiki/Pretty_Good_Privacy
