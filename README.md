@@ -63,4 +63,4 @@ A newer `sauce` can write a file that an older `sauce-install` refuses, and then
 Open a file with an age X25519 identity: `python tools/sauce-decrypt.py secret.sauce.yaml identity.key --name secret/name`.
 It prints the facts and the value length, or the value with `--print`.
 It has no GPG support, so it cannot open the wrap of a GPG reader.
-The development shell provides Python and `cryptography`.
+The development shell provides Python with `cryptography` and `bech32`.

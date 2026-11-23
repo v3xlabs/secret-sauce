@@ -11,6 +11,7 @@
         "aarch64-linux"
       ];
       forSystems = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
+      python = pkgs: pkgs.python3.withPackages (ps: [ ps.bech32 ps.cryptography ]);
     in
     {
       nixosModules.default = ./nix/module.nix;
@@ -39,7 +40,7 @@
           packages = with pkgs; [
             cargo
             clippy
-            (python3.withPackages (ps: [ ps.cryptography ]))
+            (python pkgs)
             rustc
             rustfmt
           ];
@@ -241,7 +242,7 @@
             pkgs.clippy
           ] "cargo clippy --all-targets --offline -- -D warnings";
           test = cargoCheck "test" [ ] "cargo test --offline";
-          decrypt = cargoCheck "decrypt" [ (pkgs.python3.withPackages (ps: [ ps.cryptography ])) ] ''
+          decrypt = cargoCheck "decrypt" [ (python pkgs) ] ''
             cargo run --offline --quiet --example decrypt_fixture -- example/snakeoil/admin.key > secret.sauce.yaml
             python tools/sauce-decrypt.py secret.sauce.yaml example/snakeoil/admin.key --name test/secret > actual
             printf 'name: test/secret\nversion: 4\nset: 2026-11-10\nissued: 2026-11-01\nexpires: 2027-02-10\ngenerator: %s\nformerly: old/name\nrevoke: true\nlength: 13\n' \
@@ -1037,7 +1038,7 @@
                   pkgs.age
                   pkgs.jq
                   pkgs.sops
-                  (pkgs.python3.withPackages (ps: [ ps.cryptography ]))
+                  (python pkgs)
                 ];
               }
               ''

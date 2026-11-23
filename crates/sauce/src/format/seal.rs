@@ -6,6 +6,7 @@ use chacha20poly1305::{
 };
 use hkdf::Hkdf;
 use sha2::Sha256;
+use subtle::ConstantTimeEq as _;
 use zeroize::Zeroizing;
 
 use super::{Name, Reader};
@@ -44,12 +45,7 @@ impl Keys {
 
     /// Compares `commitment` in a time that does not depend on where the first different byte is.
     pub fn matches(&self, commitment: &[u8; 32]) -> bool {
-        let difference = self
-            .commitment
-            .iter()
-            .zip(commitment)
-            .fold(0, |difference, (a, b)| difference | (a ^ b));
-        std::hint::black_box(difference) == 0
+        self.commitment.ct_eq(commitment).into()
     }
 }
 

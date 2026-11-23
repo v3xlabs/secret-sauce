@@ -8,6 +8,7 @@ import re
 import sys
 from pathlib import Path
 
+import bech32
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
@@ -16,7 +17,6 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 
 NAME = r"[a-z0-9][a-z0-9._-]*(?:/[a-z0-9][a-z0-9._-]*)*"
-ALPHABET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
 NONCE = bytes(12)
 STEPS = (256, 1024, 4096, 8192, 16384, 32768, 65536)
 TAG_BYTES = 16
@@ -46,28 +46,12 @@ def identity(path):
     text = keys[0]
     if not text.startswith("AGE-SECRET-KEY-1") or text != text.upper():
         raise ValueError("not an age X25519 identity")
-    hrp, data = text.lower().rsplit("1", 1)
-    values = [ALPHABET.index(char) for char in data]
-    checksum = 1
-    for value in [*(ord(c) >> 5 for c in hrp), 0, *(ord(c) & 31 for c in hrp), *values]:
-        top = checksum >> 25
-        checksum = (checksum & 0x1ffffff) << 5 ^ value
-        for i, generator in enumerate((0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3)):
-            if (top >> i) & 1:
-                checksum ^= generator
-    if checksum != 1 or len(values) != 58:
-        raise ValueError("invalid age identity checksum or length")
-    bits = 0
-    count = 0
-    decoded = bytearray()
-    for value in values[:-6]:
-        bits = (bits << 5) | value
-        count += 5
-        if count >= 8:
-            count -= 8
-            decoded.append((bits >> count) & 255)
-    if len(decoded) != 32 or bits & ((1 << count) - 1):
-        raise ValueError("invalid age identity padding")
+    hrp, values = bech32.bech32_decode(text)
+    if hrp != "age-secret-key-":
+        raise ValueError("invalid age identity encoding")
+    decoded = bech32.convertbits(values, 5, 8, False)
+    if decoded is None or len(decoded) != 32:
+        raise ValueError("invalid age identity length or padding")
     return X25519PrivateKey.from_private_bytes(bytes(decoded))
 
 

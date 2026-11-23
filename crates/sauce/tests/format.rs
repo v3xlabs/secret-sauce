@@ -113,6 +113,14 @@ fn a_changed_file_fails_to_open() {
         open(&recommitted, NAME),
         Err(ReadError::Commitment)
     ));
+
+    let commitment = line(&text, "commitment: ");
+    let (rest, last) = commitment.split_at(commitment.len() - 1);
+    let one_byte = text.replace(
+        commitment,
+        &format!("{rest}{}", if last == "A" { "E" } else { "A" }),
+    );
+    assert!(matches!(open(&one_byte, NAME), Err(ReadError::Commitment)));
 }
 
 #[test]
