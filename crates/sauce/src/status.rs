@@ -8,7 +8,7 @@ use sauce::format::{self, Date, Name};
 
 use crate::{
     color::{Color, Palette},
-    identity::{Admin, IdentityError, OpenError},
+    identity::{Admin, IdentityError, KeySource, OpenError},
     manifest::{ReadManifests, RuleError, Secret},
     spinner::Step,
 };
@@ -95,7 +95,7 @@ pub struct Evaluator<'a> {
     partial: bool,
     tried: usize,
     inaccessible: usize,
-    file: Option<PathBuf>,
+    file: Option<KeySource>,
 }
 
 impl<'a> Evaluator<'a> {
@@ -122,8 +122,7 @@ impl<'a> Evaluator<'a> {
         match (self.admin, self.file) {
             (None, _) => warn_unchecked(),
             (Some(_), Some(file)) if all_inaccessible => eprintln!(
-                "No key in {} is a reader of the secrets checked. Facts were not checked. Use `--identity <key-file>` to pick another key.",
-                file.display()
+                "No key in {file} is a reader of the secrets checked. Facts were not checked. Use `--identity <key-file>` to pick another key."
             ),
             (Some(_), _) => {}
         }
@@ -162,9 +161,9 @@ impl<'a> Evaluator<'a> {
         let facts = match admin.open_facts(text, name) {
             Ok(facts) => facts,
             Err(error) => {
-                if let OpenError::NotAReader { file, .. } = error {
+                if let OpenError::NotAReader { from, .. } = error {
                     self.inaccessible += 1;
-                    self.file.get_or_insert(file);
+                    self.file.get_or_insert(from);
                     return Findings {
                         problems,
                         no_reader: true,

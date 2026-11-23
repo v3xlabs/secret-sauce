@@ -52,7 +52,7 @@ kanidm/idm-admin-password  notes           alphanum, 40<48                     �
 restic/password            notes,offsite   once alphanum, 40<48                ✗
 sso/hedgedoc               notes           alphanum, 40<48                     ✗
 sso/miniflux               notes           alphanum, 40<48                     ✗
-The facts are encrypted, so expiry, changed generators and revoke are not checked, because no private key of an admin is set, in --identity, SAUCE_IDENTITY, SOPS_AGE_KEY_FILE or ~/.config/sops/age/keys.txt.
+The facts are encrypted, so expiry, changed generators and revoke are not checked, because no private key of an admin is set, in --identity, SAUCE_IDENTITY, SOPS_AGE_KEY, SOPS_AGE_KEY_FILE, SOPS_AGE_KEY_CMD or the sops key file in XDG_CONFIG_HOME or ~/.config.
 ```
 
 `✓` marks a secret whose file exists, and `✗` a secret whose file is missing.
@@ -307,6 +307,14 @@ nix shell --inputs-from . secret-sauce#sauce
 ```
 
 Make an age key for yourself with `age-keygen`, and put its public key in `sauce.adminRecipients.age`.
-`sauce` also finds the age key that you use with sops, in `SOPS_AGE_KEY_FILE` or `~/.config/sops/age/keys.txt`.
+`sauce` also finds the age key that you use with sops, and uses the first source that is set, in this order:
+`--identity` or `SAUCE_IDENTITY`, `SOPS_AGE_KEY`, `SOPS_AGE_KEY_FILE`, `SOPS_AGE_KEY_CMD`, then `sops/age/keys.txt` in `XDG_CONFIG_HOME` and in `~/.config`.
+`SOPS_AGE_KEY` holds the key itself, and `sauce` keeps it out of the programs that it starts, except `sops` in `sauce import`.
+`SOPS_AGE_KEY_CMD` is a command that prints the key on stdout.
+`sauce` splits it into words as sops does, starts it with no shell and no stdin, waits for it as sops does with no time limit, and refuses more than 64 KiB of output.
+Its stderr goes to your terminal as it is, and its words are visible in the process list, so keep the key out of both.
+sops reads all of its sources together, and `sauce` reads only the first one that is set.
+`sauce` skips an empty `SOPS_AGE_KEY` or `SOPS_AGE_KEY_CMD`, and it does not set `SOPS_AGE_RECIPIENT` for the command.
+`sauce` keeps the key in memory, and an error names the source and never the key.
 On each machine, make its key with `age-keygen -o /var/lib/sauce/host.key`, and put the public key that it prints in `sauce.recipient` of that machine.
 Then run `sauce generate`, `git add` the secrets, and deploy.

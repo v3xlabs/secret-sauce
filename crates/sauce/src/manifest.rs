@@ -614,6 +614,7 @@ fn eval_machine(flake: &Path, name: &str, write_lock: bool) -> Result<Option<Man
 
 fn nix_eval(flake: &Path, apply: &str, write_lock: bool) -> Result<Output, ReadError> {
     let mut command = Command::new("nix");
+    crate::identity::without_key(&mut command);
     command.args(["eval", "--json"]);
     if !write_lock {
         command.arg("--no-write-lock-file");

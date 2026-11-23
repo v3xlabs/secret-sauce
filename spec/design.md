@@ -247,6 +247,9 @@ A subkey that gpg cannot encrypt to, such as an expired one, stops it with an er
 A certificate with an additional decryption subkey makes gpg write for a second key, and `sauce` refuses that wrap, so a write for it stops with an error.
 Post-quantum and plugin keys go in `.age` too, because age tells the kinds apart by their prefix.
 A key in the wrong list fails the evaluation, and so does a machine with both lists empty.
+`sauce` finds your own age key from the sources that sops reads, and unlike sops, which collects the keys of all its sources, it uses the first source that is set: `--identity` or `SAUCE_IDENTITY`, then `SOPS_AGE_KEY`, `SOPS_AGE_KEY_FILE`, the output of the command in `SOPS_AGE_KEY_CMD`, and the sops key file in `XDG_CONFIG_HOME` or `~/.config`.
+An empty `SOPS_AGE_KEY` or `SOPS_AGE_KEY_CMD` counts as not set.
+The key stays in memory, and an error names the source and never the key.
 A GPG key reads as an admin, never as a host.
 `sauce` runs the `gpg` program on your PATH for it, so a key on a smartcard or a YubiKey works through gpg-agent and its pinentry.
 `sauce` gives gpg the wrap on a pipe, so a pinentry on the terminal needs `GPG_TTY`, as it does for sops, and a graphical pinentry needs nothing.

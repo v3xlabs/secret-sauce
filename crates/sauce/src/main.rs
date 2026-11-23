@@ -148,7 +148,8 @@ enum Command {
 #[derive(Args)]
 struct Identity {
     /// The age identity file of an admin.
-    /// Without it, sauce reads `SOPS_AGE_KEY_FILE` and then `~/.config/sops/age/keys.txt`.
+    /// Without it, sauce reads `SOPS_AGE_KEY`, `SOPS_AGE_KEY_FILE`, the command `SOPS_AGE_KEY_CMD`, and then `sops/age/keys.txt` in `XDG_CONFIG_HOME` or `~/.config`, and uses the first that is set.
+    /// An empty `SOPS_AGE_KEY` or `SOPS_AGE_KEY_CMD` counts as not set, and a relative `XDG_CONFIG_HOME` is ignored.
     #[arg(long = "identity", env = "SAUCE_IDENTITY")]
     file: Option<PathBuf>,
 }

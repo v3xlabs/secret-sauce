@@ -392,6 +392,83 @@
                   exit 1
                 fi
 
+                # Each source of the admin key alone opens a file, and a source beats every source after it, in the order of sops.
+                good=$PWD/$keys/admin.key
+                wrong=$PWD/$keys/backup.key
+                export HOME="$TMPDIR/home" XDG_CONFIG_HOME="$TMPDIR/config"
+                mkdir -p "$HOME/.config/sops/age" "$XDG_CONFIG_HOME/sops/age"
+                clear() { rm -f "$HOME/.config/sops/age/keys.txt" "$XDG_CONFIG_HOME/sops/age/keys.txt"; assign=(); }
+                add() {
+                  case $1 in
+                    0) assign+=("SAUCE_IDENTITY=$2") ;;
+                    1) assign+=("SOPS_AGE_KEY=$(cat "$2")") ;;
+                    2) assign+=("SOPS_AGE_KEY_FILE=$2") ;;
+                    3) assign+=("SOPS_AGE_KEY_CMD=cat $2") ;;
+                    4) cp "$2" "$XDG_CONFIG_HOME/sops/age/keys.txt" ;;
+                    5) cp "$2" "$HOME/.config/sops/age/keys.txt" ;;
+                  esac
+                }
+                opens() { env "''${assign[@]}" sauce get hedgedoc/db-password --print $flags; }
+                for i in 0 1 2 3 4 5; do
+                  clear; add $i $good
+                  [[ $(opens) == "$value" ]]
+                  for j in 0 1 2 3 4 5; do
+                    (( j > i )) || continue
+                    clear; add $i $good; add $j $wrong
+                    [[ $(opens) == "$value" ]]
+                    clear; add $i $wrong; add $j $good
+                    if opens; then
+                      exit 1
+                    fi
+                  done
+                done
+                clear
+
+                goodkey=$(grep AGE-SECRET-KEY $good)
+                wrongkey=$(grep AGE-SECRET-KEY $wrong)
+                [[ $(SOPS_AGE_KEY="$wrongkey $goodkey" sauce get hedgedoc/db-password --print $flags) == "$value" ]]
+                [[ $(SOPS_AGE_KEY= SOPS_AGE_KEY_FILE=$good sauce get hedgedoc/db-password --print $flags) == "$value" ]]
+
+                # An error names the source, and shows no key.
+                bogus=AGE-SECRET-KEY-1QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ
+                for key in "$bogus" "$wrongkey"; do
+                  if SOPS_AGE_KEY=$key sauce get hedgedoc/db-password --print $flags > out 2> error; then
+                    exit 1
+                  fi
+                  grep -F SOPS_AGE_KEY error
+                  if grep -F "$key" out error; then
+                    exit 1
+                  fi
+                done
+
+                # The command starts with no shell, shows its stderr, and its stdout stays out of the output.
+                printf '#!/bin/sh\necho from-command >&2\ncat %s\nexit 3\n' "$good" > key-command
+                chmod +x key-command
+                if SOPS_AGE_KEY_CMD=$PWD/key-command sauce get hedgedoc/db-password --print $flags > out 2> error; then
+                  exit 1
+                fi
+                grep -F from-command error
+                grep -F SOPS_AGE_KEY_CMD error
+                if grep -F "$goodkey" out error; then
+                  exit 1
+                fi
+                if SOPS_AGE_KEY_CMD="cat $good; touch $PWD/shell-ran" sauce get hedgedoc/db-password --print $flags 2> error; then
+                  exit 1
+                fi
+                grep -F SOPS_AGE_KEY_CMD error
+                test ! -e shell-ran
+                # The output is a good key and then more than 64 KiB of empty lines, so only the limit refuses it.
+                cat > key-long <<EOF
+                #!/bin/sh
+                cat $good
+                head -c 131072 /dev/zero | tr '\0' '\n'
+                EOF
+                chmod +x key-long
+                if SOPS_AGE_KEY_CMD=$PWD/key-long sauce get hedgedoc/db-password --print $flags 2> error; then
+                  exit 1
+                fi
+                grep -F SOPS_AGE_KEY_CMD error
+
                 if head -c 253 /dev/zero | tr '\0' a | sauce set ddclient/api-token $flags; then
                   exit 1
                 fi
@@ -496,6 +573,14 @@
                 [[ $(sauce get ddclient/api-token --print $flags) == edited-token ]]
                 sauce get ddclient/api-token $flags | grep -x 'note: API token for the DNS zone example.com, made in the dashboard of the DNS provider.'
                 [[ -z $(ls /dev/shm/run) ]]
+
+                # An inline key in the environment of sauce stays out of the editor that it starts.
+                cat > editor-env <<'EOF'
+                printf %s "''${SOPS_AGE_KEY-unset}" > seen
+                printf edited-token > "$1"
+                EOF
+                SOPS_AGE_KEY=not-a-key EDITOR="sh $PWD/editor-env" sauce edit ddclient/api-token $flags
+                [[ $(cat seen) == unset ]]
 
                 files > before
                 sauce generate --dry-run --manifest ${widerManifests} --identity example/snakeoil/missing.key </dev/null > preview
@@ -838,7 +923,7 @@
                 # A gpg on PATH that records each run, so the check sees which commands start gpg.
                 # It also records the name of each variable for an age private key that gpg gets, so the check sees none reach it.
                 mkdir bin
-                printf '#!/bin/sh\necho "$*" >> %s\nenv | grep -oE "^(SOPS_AGE_KEY|SOPS_AGE_KEY_FILE|SAUCE_IDENTITY)=" >> %s\nexec %s "$@"\n' "$TMPDIR/runs" "$TMPDIR/keys" ${pkgs.gnupg}/bin/gpg > bin/gpg
+                printf '#!/bin/sh\necho "$*" >> %s\nenv | grep -oE "^(SOPS_AGE_KEY|SOPS_AGE_KEY_FILE|SOPS_AGE_KEY_CMD|SAUCE_IDENTITY)=" >> %s\nexec %s "$@"\n' "$TMPDIR/runs" "$TMPDIR/keys" ${pkgs.gnupg}/bin/gpg > bin/gpg
                 chmod +x bin/gpg
                 export PATH="$PWD/bin:$PATH"
 
@@ -908,7 +993,7 @@
                 # The last character of a 32-byte share in base64 has its low two bits zero, so A and Q are both canonical.
                 python -c 'import sys; from pathlib import Path; p = Path(sys.argv[1]); s = p.read_text(); i = s.index("      - X25519 "); j = s.index("\n", i) - 1; p.write_text(s[:j] + ("A" if s[j] != "A" else "Q") + s[j + 1:])' $file
                 : > "$TMPDIR/runs"
-                [[ $(SAUCE_IDENTITY=$admin SOPS_AGE_KEY_FILE="$TMPDIR/sops.key" sauce get hedgedoc/db-password --print $flags) == "$value" ]]
+                [[ $(SAUCE_IDENTITY=$admin SOPS_AGE_KEY_FILE="$TMPDIR/sops.key" SOPS_AGE_KEY_CMD="cat $admin" sauce get hedgedoc/db-password --print $flags) == "$value" ]]
                 grep -- --unwrap "$TMPDIR/runs"
                 test ! -s "$TMPDIR/keys"
 

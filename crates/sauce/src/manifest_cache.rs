@@ -73,7 +73,9 @@ fn cache_key(flake: &Path) -> Option<String> {
     ];
     let [metadata, config, version] = probes
         .map(|args| {
-            Command::new("nix")
+            let mut command = Command::new("nix");
+            crate::identity::without_key(&mut command);
+            command
                 .current_dir(flake)
                 .args(args)
                 .stdin(Stdio::null())

@@ -50,7 +50,12 @@ const STATUS_ONLY: [&str; 4] = ["--log-file", "/dev/null", "--status-fd", "2"];
 /// The variables that name or hold an age private key, for `sauce` or for sops, which gpg never needs.
 ///
 /// gpg keeps the rest of the environment, such as `GNUPGHOME`, `HOME`, `PATH` and the variables of gpg-agent and pinentry.
-const AGE_KEY_VARIABLES: [&str; 3] = ["SAUCE_IDENTITY", "SOPS_AGE_KEY", "SOPS_AGE_KEY_FILE"];
+const AGE_KEY_VARIABLES: [&str; 4] = [
+    "SAUCE_IDENTITY",
+    "SOPS_AGE_KEY",
+    "SOPS_AGE_KEY_FILE",
+    "SOPS_AGE_KEY_CMD",
+];
 
 /// The key ID in an `ENC_TO` status line for a recipient that the wrap hides.
 const HIDDEN_RECIPIENT: &str = "0000000000000000";

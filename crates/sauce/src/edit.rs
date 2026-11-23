@@ -390,6 +390,7 @@ fn in_editor(
         r#" "$1"; status=$?; read -r _ _ _ parent _ < /proc/$$/stat; [ "$parent" = "$3" ] || rm -rf "$2"; exit $status"#,
     );
     let mut editor = Command::new("sh");
+    crate::identity::without_key(&mut editor);
     editor
         .arg("-c")
         .arg(script)

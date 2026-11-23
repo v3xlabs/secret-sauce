@@ -43,6 +43,7 @@ pub enum CopyError {
 pub fn copy(value: &Value) -> Result<(), CopyError> {
     let set = |name| env::var_os(name).filter(|value| !value.is_empty());
     let mut command = Command::new("timeout");
+    crate::identity::without_key(&mut command);
     let program = if set("WAYLAND_DISPLAY").is_some() {
         let runtime = set("XDG_RUNTIME_DIR").ok_or(CopyError::NoRuntimeDir)?;
         command
