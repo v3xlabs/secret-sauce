@@ -566,6 +566,35 @@
                 printf token | sauce set ddclient/api-token --expires $lastyear $flags
                 sauce status $flags | grep -E "^ddclient/api-token +expired on $lastyear"
 
+                # Only the date changes, and every other fact and the value stay.
+                soon=$(date -u -d '+90 days' +%F)
+                sauce get ddclient/api-token $flags | grep -v '^expires:' > facts
+                files > before
+                if sauce expire ddclient/api-token $soon $flags --identity example/snakeoil/missing.key; then
+                  exit 1
+                fi
+                diff before <(files)
+                sauce get ddclient/api-token $flags | grep -x "expires: $lastyear"
+                sauce expire ddclient/api-token $soon $flags
+                sauce list $flags | grep -E '^ddclient/api-token .* in (89|90)d '
+                sauce get ddclient/api-token $flags | grep -x "expires: $soon"
+                sauce get ddclient/api-token $flags | grep -v '^expires:' | diff facts -
+                [[ $(sauce get ddclient/api-token --print $flags) == token ]]
+                sauce expire ddclient/api-token --clear $flags
+                if sauce get ddclient/api-token $flags | grep '^expires:'; then
+                  exit 1
+                fi
+                sauce get ddclient/api-token $flags | grep -v '^expires:' | diff facts -
+                [[ $(sauce get ddclient/api-token --print $flags) == token ]]
+
+                # A declaration that takes another padding step than the file stops the command, and `sauce generate` fixes that first.
+                files > before
+                if sauce expire hedgedoc/db-password 2030-01-01 --manifest ${boundManifests 253} 2> error; then
+                  exit 1
+                fi
+                grep -F hedgedoc/db-password error
+                diff before <(files)
+
                 mkdir -m 700 /dev/shm/run
                 export XDG_RUNTIME_DIR=/dev/shm/run
                 echo 'printf edited-token > "$1"' > editor

@@ -253,7 +253,7 @@ The key stays in memory, and an error names the source and never the key.
 A GPG key reads as an admin, never as a host.
 `sauce` runs the `gpg` program on your PATH for it, so a key on a smartcard or a YubiKey works through gpg-agent and its pinentry.
 `sauce` gives gpg the wrap on a pipe, so a pinentry on the terminal needs `GPG_TTY`, as it does for sops, and a graphical pinentry needs nothing.
-Every write wraps a new file key for each reader, so each `sauce generate`, `sauce set`, `sauce edit` and `sauce rotate` needs `gpg` and the public key of each GPG reader in the keyring of whoever writes.
+Every write wraps a new file key for each reader, so each `sauce generate`, `sauce set`, `sauce edit`, `sauce expire` and `sauce rotate` needs `gpg` and the public key of each GPG reader in the keyring of whoever writes.
 To open a file, `sauce` tries your age keys first, and runs gpg only when none of them is a reader and the command needs the file key.
 `sauce list` and `sauce status` never run gpg.
 A card costs one operation for each file that `sauce` opens with it, so with a touch policy it asks for one touch per file.
@@ -287,7 +287,7 @@ When a host is compromised or retired, the useful question is what its key could
 It lists every secret that was ever encrypted for the key, and splits the list into those `sauce` can rotate for you and those you must replace by hand.
 
 `sauce` also keeps an expiry date where there is one.
-You give it with `sauce set --expires`, and for a certificate `sauce` reads it from the certificate.
+You give it with `sauce set --expires`, you change or clear it with `sauce expire <name> <date>` or `sauce expire <name> --clear`, and for a certificate `sauce` reads it from the certificate.
 `sauce status` warns before the date.
 
 ## What it is not

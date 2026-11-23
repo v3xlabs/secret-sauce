@@ -185,6 +185,21 @@ It lists a secret with no file, a file that no machine declares, and a file whos
 If you supply the value for a secret and it has no file, `sauce status` shows `unset`.
 With the key of an admin it also lists a secret that expires in the next 30 days, a secret marked `revoke`, and a secret whose generator changed.
 
+When the provider renews the token, change its date and keep the value.
+
+```sh
+sauce expire ddclient/api-token 2028-05-15
+```
+
+```
+ddclient/api-token expires on 2028-05-15
+```
+
+`sauce expire <name> --clear` removes the date.
+`sauce expire` keeps the value, the version, the set date and the other facts, and it encrypts the file again for the declared readers, so it needs the key of an admin.
+It refuses a file whose readers differ from the declaration, as `sauce edit` does, and a file whose value has another padding step than the declaration gives, and `sauce generate` encrypts that file again first.
+`sauce set --expires` takes a new value too, and a terminal would ask for it, so the date alone has its own command.
+
 Find a secret by a part of its name.
 
 ```sh

@@ -1,6 +1,7 @@
 mod clipboard;
 mod color;
 mod edit;
+mod expire;
 mod generate;
 mod get;
 mod gpg;
@@ -79,6 +80,20 @@ enum Command {
         /// Approve a change of readers with no question, such as when stdin gives the value.
         #[arg(long)]
         yes: bool,
+        #[command(flatten)]
+        source: Source,
+        #[command(flatten)]
+        identity: Identity,
+    },
+    /// Change the date a secret stops working, or clear it, and keep the value.
+    Expire {
+        name: String,
+        /// The new date, as YYYY-MM-DD.
+        #[arg(required_unless_present = "clear", conflicts_with = "clear")]
+        date: Option<Date>,
+        /// Remove the date.
+        #[arg(long)]
+        clear: bool,
         #[command(flatten)]
         source: Source,
         #[command(flatten)]
@@ -380,6 +395,22 @@ fn run(command: Command) -> Result<ExitCode, Box<dyn Error>> {
                 dates,
                 identity.file.as_deref(),
                 yes,
+            )?)
+        }
+        Command::Expire {
+            name,
+            date,
+            source,
+            identity,
+            ..
+        } => {
+            let (machines, root) = source.load(Machines::eval)?;
+            Ok(expire::expire(
+                &machines,
+                &root,
+                &name,
+                date,
+                identity.file.as_deref(),
             )?)
         }
         Command::Import {
