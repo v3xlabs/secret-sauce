@@ -7,11 +7,11 @@ use sauce::format::{self, Date, Facts, Name, NameError, Value};
 
 use crate::{
     certificate::{self, Certificate},
-    generate::{self, ReaderChange},
-    gpg,
+    generate, gpg,
     identity::{Admin, IdentityError, OpenError},
     make::{Recipe, RecipeError},
     manifest::{FolderError, Machines, RuleError},
+    readers::{self, ReaderChange},
     spinner::Step,
 };
 
@@ -111,7 +111,7 @@ pub fn set(
     if let Some(change) = reader_change.as_ref().filter(|change| !change.is_empty()) {
         // The terminal shows the declared readers, so they are checked before they are printed.
         format::validate_readers(&secret.readers)?;
-        generate::print_reader_changes([(&name, change)]).map_err(SetError::Prompt)?;
+        readers::print([(&name, change)], secrets.keys()).map_err(SetError::Prompt)?;
         if !yes
             && !generate::ask("Encrypt the value for these readers?").map_err(SetError::Prompt)?
         {

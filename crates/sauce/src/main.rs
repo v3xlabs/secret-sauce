@@ -13,6 +13,7 @@ mod import;
 mod make;
 mod manifest;
 mod manifest_cache;
+mod readers;
 mod remove;
 mod rotate;
 mod search;

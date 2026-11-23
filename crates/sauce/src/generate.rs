@@ -13,6 +13,7 @@ use crate::{
     identity::{Admin, IdentityError, OpenError},
     make::{Recipe, RecipeError},
     manifest::{FolderError, Machines, RuleError, Secret},
+    readers::{self, ReaderChange},
     spinner,
 };
 
@@ -91,42 +92,11 @@ struct Change<'a> {
     bound: usize,
 }
 
-/// The readers that a secret gains and loses, from the readers of its file to the declared ones.
-pub struct ReaderChange<'a> {
-    gained: Vec<&'a Reader>,
-    lost: Vec<Reader>,
-}
-
 struct Creation<'a> {
     name: &'a Name,
     secret: &'a Secret<'a>,
     path: PathBuf,
     recipe: Recipe,
-}
-
-impl<'a> ReaderChange<'a> {
-    pub fn new(found: &[Reader], declared: &'a [Reader]) -> Self {
-        Self {
-            gained: declared
-                .iter()
-                .filter(|reader| !found.contains(reader))
-                .collect(),
-            lost: found
-                .iter()
-                .filter(|reader| !declared.contains(reader))
-                .cloned()
-                .collect(),
-        }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.gained.is_empty() && self.lost.is_empty()
-    }
-
-    /// Whether a reader of the file is not declared, so that it knows the value that the file holds.
-    pub fn loses(&self) -> bool {
-        !self.lost.is_empty()
-    }
 }
 
 /// Creates the file of every secret that `sauce` can make and that has none, and re-encrypts every file whose readers changed.
@@ -181,6 +151,12 @@ pub fn generate(
         return Ok(());
     }
 
+    let readers_change = changes.iter().any(|change| !change.access.is_empty());
+    if readers_change
+        && !confirm(&changes, creations.len(), secrets.keys()).map_err(GenerateError::Prompt)?
+    {
+        return Err(GenerateError::NotConfirmed);
+    }
     apply(creations, changes, &unset, root, identity, palette)
 }
 
@@ -192,10 +168,6 @@ fn apply(
     identity: Option<&Path>,
     palette: Palette,
 ) -> Result<(), GenerateError> {
-    let readers_change = changes.iter().any(|change| !change.access.is_empty());
-    if readers_change && !confirm(&changes, creations.len()).map_err(GenerateError::Prompt)? {
-        return Err(GenerateError::NotConfirmed);
-    }
     let step = spinner::Step::secrets("Encrypting", creations.len() + changes.len());
     let created_count = creations.len();
     let mut created = Vec::with_capacity(created_count);
@@ -344,35 +316,22 @@ fn summarize(created: usize, reencrypted: usize, unset: &[&Name], palette: Palet
     }
 }
 
-/// Asks on the terminal whether to apply the reader changes of `changes` and create `pending` files.
-fn confirm(changes: &[Change<'_>], pending: usize) -> io::Result<bool> {
-    print_reader_changes(changes.iter().map(|change| (change.name, &change.access)))?;
+/// Asks on the terminal whether to apply the reader changes of `changes` and create `pending` files, with the folder colors of the `declared` secrets.
+fn confirm<'a>(
+    changes: &'a [Change<'_>],
+    pending: usize,
+    declared: impl IntoIterator<Item = &'a Name>,
+) -> io::Result<bool> {
+    readers::print(
+        changes.iter().map(|change| (change.name, &change.access)),
+        declared,
+    )?;
     let question = match pending {
         0 => "Encrypt these secrets again with the key of an admin?".to_owned(),
         1 => "Apply reader changes and create 1 missing file?".to_owned(),
         count => format!("Apply reader changes and create {count} missing files?"),
     };
     ask(&question)
-}
-
-/// Prints every reader that changes, with every key that gets access to a value that exists.
-pub fn print_reader_changes<'a, 'b: 'a>(
-    changes: impl IntoIterator<Item = (&'a Name, &'a ReaderChange<'b>)>,
-) -> io::Result<()> {
-    let mut stderr = io::stderr().lock();
-    writeln!(
-        stderr,
-        "These readers change. A key that gets access learns a value that exists:"
-    )?;
-    for (name, change) in changes {
-        for reader in &change.gained {
-            writeln!(stderr, "  {name}  gets {} {}", reader.r#for, reader.key)?;
-        }
-        for reader in &change.lost {
-            writeln!(stderr, "  {name}  loses {} {}", reader.r#for, reader.key)?;
-        }
-    }
-    Ok(())
 }
 
 /// Asks a yes or no question on the terminal, and gives `false` with no terminal.

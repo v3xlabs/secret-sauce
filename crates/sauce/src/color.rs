@@ -58,8 +58,8 @@ pub enum Color {
     Rgb([u8; 3]),
 }
 
-/// The colors that a terminal shows, or none when the output is not a terminal.
-#[derive(Clone, Copy)]
+/// The colors that a terminal shows, or none when the output is not a terminal, which is also the default.
+#[derive(Clone, Copy, Default)]
 pub struct Palette(Option<Depth>);
 
 /// The color of each folder in one listing.
@@ -81,7 +81,16 @@ struct Painted<T> {
 
 impl Palette {
     pub fn stdout() -> Self {
-        let enabled = io::stdout().is_terminal()
+        Self::terminal(io::stdout().is_terminal())
+    }
+
+    /// For the questions that `sauce` asks on stderr, so `sauce generate 2>&1 | cat` has no escape codes.
+    pub fn stderr() -> Self {
+        Self::terminal(io::stderr().is_terminal())
+    }
+
+    fn terminal(is_terminal: bool) -> Self {
+        let enabled = is_terminal
             && env::var_os("NO_COLOR").is_none()
             && env::var_os("TERM").is_none_or(|term| term != "dumb");
         Self(enabled.then(|| {
