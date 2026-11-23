@@ -291,6 +291,7 @@ fn list(
         }
     }
     let palette = Palette::stdout();
+    let folders = palette.folders(rows.iter().map(|(cells, _, _)| cells[0].as_ref()));
     let mut text = String::new();
     let [
         name_width,
@@ -315,7 +316,7 @@ fn list(
         write!(
             text,
             "{}{:name_padding$}  {machines:machines_width$}  {made_by:made_by_width$}  {set:set_width$}  ",
-            palette.name(&name),
+            folders.name(&name),
             ""
         )?;
         let padding = expires_width - expires.len();
