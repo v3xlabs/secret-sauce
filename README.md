@@ -1,62 +1,90 @@
 ![secret-sauce](docs/lettermark.svg)
 
-Like sops with sops-nix, plus a lifecycle: `sauce` generates and rotates the secrets of your NixOS machines, tracks their expiry dates, keeps them encrypted in your repository, and pads each one so that its length stays hidden.
+![](docs/demo.gif)
 
-![A sauce session: a secret declared in Nix, then generate, set with an expiry date, rotate, and the padded files](docs/demo.gif)
+Alternative to [sops](sops) & [sops-nix](sops-nix) with support for programmatic generation, length-obfuscation through padding, selective rotation, lifecycle tracking, a nicer editing experience, and [NixOS](nixos) integration with the local homelab-er and fleet-control in mind.
 
-Declare a secret next to the service that uses it:
+`secret-sauce` is built on the shoulders of giants ([sops](sops), [sops-nix](sops-nix), [age](age), [ssh-to-age](ssh-to-age), [pgp](pgp), and many more). Familiarity with any of the aforementioned makes this easy.
 
+## Quickstart
+
+You can install the sauce cli from flake input or using:
+
+```sh
+nix shell github:v3xlabs/secret-sauce
+```
+
+Or by flake
+
+```sh
+inputs.sauce.url = "github:v3xlabs/secret-sauce";
+```
+
+A lot of the `sauce` nix configuration syntax follows or is similar to the [sops-nix](sops-nix) counterpart.
+
+### Declare a secret
+
+Secrets can be declared wherever you like, allowing you to organize your dotfiles in whatever way makes sense for you.
+
+The `generator` field can be defined, for variables that can be rotated, think passwords, api-keys, most things:
 ```nix
-# rotated whenever you ask
-sauce.secrets."kanidm/oauth2/freshrss".generator = { encoding = "alphanum"; min = 40; max = 48; };
+sauce.secrets."kanidm/oauth2/freshrss" {
+  generator = {
+    encoding = "alphanum";
+    min = 40;
+    max = 48;
+  };
+};
+```
 
-# made one time and never touched again
-sauce.secrets."litellm/salt-key".once = { encoding = "alphanum"; min = 40; max = 48; };
+The `once` field is similar to `generator` however only applied if no value exists; `once` is intended for use for disk-encryption, salts, etc.
+Any values which if rotated would result in data-loss.
+```nix
+sauce.secrets."litellm/salt-key" = {
+  once = {
+    encoding = "alphanum";
+    min = 40;
+    max = 48;
+  };
+};
+```
 
-# a token somebody else issues, you paste it in with `sauce set`
+If no `generator` or `once` is defined a variable 
+```nix
 sauce.secrets."github/pat" = { };
 ```
 
-Then run `sauce generate`.
-It makes the values, pads them, and encrypts each one for the hosts that use it and for your admin keys.
+### Define the recipient
 
-## Add to a flake
-
-Add the input and import `nixosModules.default` in each machine.
+For each host you will want to define a small `sauce` block like so:
 
 ```nix
 {
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-  inputs.sauce.url = "github:v3xlabs/secret-sauce";
-
-  outputs = { nixpkgs, sauce, ... }: {
-    nixosConfigurations.notes = nixpkgs.lib.nixosSystem {
-      modules = [
-        ./configuration.nix
-        sauce.nixosModules.default
-        {
-          sauce = {
-            adminRecipients.age = [ "<age public key of an admin>" ];
-            # adminRecipients.pgp = [ "<GPG fingerprint of an admin>" ];
-            recipient = "<public key of this machine>";
-            identityFile = "/var/lib/sauce/host.key";
-            defaultDir = ./secrets;
-          };
-        }
-      ];
-    };
+  sauce = {
+    adminRecipients.age = [ "age1..." ];
+    recipient.age = "age1...";
+    identityFile = "/var/lib/sauce/host.key";
+    defaultDir = ./secrets;
   };
-}
+};
 ```
 
 ## Commands
 
-`list`, `generate`, `set`, `rotate`, `status`, `edit`, `import`, `search`, `get`
+This is just a short list; for more refer to the manual or `sauce --help`
 
-## Running sauce
+- `sauce list` - an overview of everything
+- `sauce generate` - generates any empty secrets
+- `sauce status` - shows a status overview
+- `sauce set` - stores a secret, or its metadata
+- `sauce get` - retrieves a secret
+- `sauce edit` - opens in your `$EDITOR`
+- `sauce rotate` - rotates a secret or glob of secrets
+- `sauce search` - fzf-like search for use in scripts
 
-Run the `sauce` of the flake input that your hosts use: `nix run --inputs-from . sauce -- generate`.
-A newer `sauce` can write a file that an older `sauce-install` refuses, and then that host fails to activate.
+## Why?
+
+Well obviously because we needed **S**ome **A**lternative **U**naudited **C**rypto **E**ngine.
 
 ## Independent decryption
 
@@ -64,3 +92,9 @@ Open a file with an age X25519 identity: `python tools/sauce-decrypt.py secret.s
 It prints the facts and the value length, or the value with `--print`.
 It has no GPG support, so it cannot open the wrap of a GPG reader.
 The development shell provides Python with `cryptography` and `bech32`.
+
+[sops]: https://github.com/getsops/sops
+[sops-nix]: https://github.com/Mic92/sops-nix
+[age]: https://github.com/FiloSottile/age
+[ssh-to-age]: https://github.com/Mic92/ssh-to-age
+[pgp]: https://en.wikipedia.org/wiki/Pretty_Good_Privacy
