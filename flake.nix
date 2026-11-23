@@ -28,6 +28,17 @@
             "sauce"
           ];
           doCheck = false;
+          # `sauce` answers each Tab itself, so the scripts only register it, under the name `sauce` that the shell finds on its PATH.
+          postInstall = ''
+            mkdir -p $out/share/bash-completion/completions $out/share/zsh/site-functions $out/share/fish/vendor_completions.d
+            export PATH="$out/bin:$PATH"
+            # The script fills COMPREPLY from an unquoted command substitution, which would expand the `*` of a pattern or drop it under nullglob, so it turns pathname expansion off for the call.
+            SAUCE_COMPLETE=bash sauce | sed '/^    local IFS=/a\    if local - 2> /dev/null; then set -f; fi' > $out/share/bash-completion/completions/sauce
+            SAUCE_COMPLETE=zsh sauce > $out/share/zsh/site-functions/_sauce
+            # The file is the body of the function that zsh autoloads, so it must also call the completer for the first Tab.
+            echo '_clap_dynamic_completer_sauce "$@"' >> $out/share/zsh/site-functions/_sauce
+            SAUCE_COMPLETE=fish sauce > $out/share/fish/vendor_completions.d/sauce.fish
+          '';
           meta = {
             license = pkgs.lib.licenses.gpl3Only;
             mainProgram = "sauce";
@@ -1118,6 +1129,149 @@
                 refused 'error: ' sso/hedgedoc
 
                 files | diff before -
+                touch $out
+              '';
+          completion =
+            pkgs.runCommand "sauce-completion"
+              {
+                nativeBuildInputs = [
+                  self.packages.${pkgs.stdenv.hostPlatform.system}.sauce
+                  pkgs.jq
+                  pkgs.gitMinimal
+                  pkgs.nix
+                  pkgs.zsh
+                  pkgs.fish
+                ];
+              }
+              ''
+                export HOME="$TMPDIR/home" XDG_CACHE_HOME="$TMPDIR/cache"
+                mkdir -p "$HOME" bin
+                # A nix on PATH that records each run and fails, so the check sees that a completion never starts it.
+                printf '#!/bin/sh\necho "$*" >> %s\nexit 1\n' "$TMPDIR/nix-runs" > bin/nix
+                chmod +x bin/nix
+                export PATH="$PWD/bin:$PATH"
+
+                mkdir checkout
+                cp -r ${self}/example checkout/
+                chmod -R u+w checkout
+                cd checkout
+
+                # The installed script registers the completion of bash under the name sauce.
+                # The builtin complete of an interactive bash only registers the function, which the check calls by hand, so a no-op stands in for it.
+                complete() { :; }
+                source ${self.packages.${pkgs.stdenv.hostPlatform.system}.sauce}/share/bash-completion/completions/sauce
+                candidates() {
+                  COMP_WORDS=("$@")
+                  COMP_CWORD=$(( $# - 1 ))
+                  COMP_TYPE=9
+                  COMPREPLY=()
+                  _clap_complete_sauce sauce "''${COMP_WORDS[COMP_CWORD]}" 2> /dev/null
+                  printf '%s\n' "''${COMPREPLY[@]}"
+                }
+
+                # A normal command ignores COMPLETE, which other programs set.
+                [[ $(COMPLETE=bash sauce list --manifest ${manifests} 2> /dev/null | wc -l) -eq 9 ]]
+
+                # With no file and no saved evaluation there is no name, and the flags and the commands still complete.
+                [[ -z $(candidates sauce get h) ]]
+                candidates sauce get --pr | grep -x -- '--print'
+                candidates sauce ed | grep -x edit
+
+                # A real evaluation by `sauce list` saves the declared names, and a later completion reads them with no file on disk and no nix.
+                mkdir "$TMPDIR/evaluated"
+                (
+                  cd "$TMPDIR/evaluated"
+                  git init -q
+                  cat > flake.nix <<'EOF'
+                {
+                  outputs = { self }: {
+                    nixosConfigurations.fixture = {
+                      options.sauce = {};
+                      config.sauce.manifest = {
+                        recipient = "${(manifest "backup").recipient}";
+                        adminRecipients = { age = [ "${lib.head (manifest "backup").adminRecipients.age}" ]; pgp = []; };
+                        secrets = {
+                          "hedgedoc/db-password".file = "secrets/hedgedoc/db-password.sauce.yaml";
+                          "hedgedoc/session-secret".file = "secrets/hedgedoc/session-secret.sauce.yaml";
+                          "sso/hedgedoc".file = "secrets/sso/hedgedoc.sauce.yaml";
+                          "sso/miniflux".file = "secrets/sso/miniflux.sauce.yaml";
+                        };
+                        read = [];
+                      };
+                    };
+                  };
+                }
+                EOF
+                  git add flake.nix
+                  NIX_REMOTE="local?root=$TMPDIR/manifest-store" NIX_CONFIG="experimental-features = nix-command flakes" \
+                    PATH="${pkgs.nix}/bin:$PATH" sauce list > /dev/null 2>&1
+                  ls "$XDG_CACHE_HOME"/sauce/*.json
+                  printf '%s\n' hedgedoc/db-password hedgedoc/session-secret | diff - <(candidates sauce get hedgedoc/)
+                  printf '%s\n' hedgedoc/ | diff - <(candidates sauce get h)
+                  printf '%s\n' sso/ 'sso/\*' | diff - <(candidates sauce edit s)
+                  printf '%s\n' 'sso/\*' sso/hedgedoc sso/miniflux | diff - <(candidates sauce rotate sso/)
+                  printf '%s\n' "'sso/hedgedoc" "'sso/miniflux" | diff - <(candidates sauce rotate "'sso/")
+                  # A secret that is only declared has no file to remove.
+                  [[ -z $(candidates sauce remove s) ]]
+                )
+                rm -r "$XDG_CACHE_HOME/sauce"
+                key=$(printf %s "$(pwd -P)" | sha256sum | cut -d' ' -f1)
+
+                # The .sauce.yaml files on disk give their names with no saved evaluation.
+                sauce generate --manifest ${manifests} > /dev/null
+                printf '%s\n' hedgedoc/db-password hedgedoc/session-secret | diff - <(candidates sauce get hedgedoc/)
+                printf '%s\n' sso/ 'sso/\*' | diff - <(candidates sauce remove s)
+                printf '%s\n' backup/ssh-key | diff - <(candidates sauce expire backup/)
+                printf '%s\n' restic/password | diff - <(candidates sauce set restic/)
+                # Bash keeps an open quote in the candidate, and zsh and fish get the name with no quote, which they match and insert themselves.
+                printf '%s\n' '"sso/hedgedoc' | diff - <(candidates sauce get '"sso/h')
+                # Inside a quote bash gets full names, because readline closes the quote after a folder that it takes for a finished word.
+                printf '%s\n' '"hedgedoc/db-password' '"hedgedoc/session-secret' | diff - <(candidates sauce get '"hed')
+                [[ $(_CLAP_IFS=$'\n' _CLAP_COMPLETE_INDEX=2 SAUCE_COMPLETE=zsh sauce -- sauce get '"sso/h') == sso/hedgedoc ]]
+
+                # A file that no machine declares is offered to remove, next to declared files that are not, once the saved evaluation says what is declared.
+                mkdir example/secrets/old
+                sed 's|^name: .*|name: old/thing|' example/secrets/sso/hedgedoc.sauce.yaml > example/secrets/old/thing.sauce.yaml
+                mkdir -p -m 700 "$XDG_CACHE_HOME/sauce"
+                jq '{ key: "unchecked", machines: . }' ${manifests} > "$XDG_CACHE_HOME/sauce/$key.json"
+                chmod 600 "$XDG_CACHE_HOME/sauce/$key.json"
+                printf '%s\n' old/ 'old/\*' | diff - <(candidates sauce remove o)
+                [[ -z $(candidates sauce remove s) ]]
+                # A declared file stays declared when its secret was renamed, so its old name in the file is not offered either.
+                sed -i 's|^name: .*|name: renamed/x|' example/secrets/sso/hedgedoc.sauce.yaml
+                [[ -z $(candidates sauce remove r) ]]
+                # The same from a folder inside the source root, which a .git marks, where the saved evaluation keeps each path relative to that root.
+                mkdir .git
+                (
+                  cd example
+                  inner=$(printf %s "$(pwd -P)" | sha256sum | cut -d' ' -f1)
+                  jq '{ key: "unchecked", machines: . }' ${manifests} > "$XDG_CACHE_HOME/sauce/$inner.json"
+                  chmod 600 "$XDG_CACHE_HOME/sauce/$inner.json"
+                  [[ -z $(candidates sauce remove r) ]]
+                  # The walk starts at the source root, so a leftover outside this folder is offered, and remove --dry-run accepts the name that completion gives.
+                  mkdir ../other
+                  sed 's|^name: .*|name: stray/one|' secrets/sso/miniflux.sauce.yaml > ../other/one.sauce.yaml
+                  printf '%s\n' stray/ 'stray/\*' | diff - <(candidates sauce remove st)
+                  printf '%s\n' stray/one | diff - <(candidates sauce remove stray/ | grep -v '\\\*')
+                  sauce remove stray/one --dry-run --manifest ${manifests} | grep -F one.sauce.yaml
+                )
+                rm -r "$XDG_CACHE_HOME/sauce"
+
+                # zsh runs the completer on the first Tab, from the file that its fpath gives, and fish reads its script, and both get the pattern with no backslash.
+                zsh -f -c '
+                  fpath=(${self.packages.${pkgs.stdenv.hostPlatform.system}.sauce}/share/zsh/site-functions $fpath)
+                  autoload -Uz _sauce
+                  compdef() { :; }
+                  _describe() { print -rl -- "''${(P@)3}"; }
+                  words=(sauce edit s)
+                  CURRENT=3
+                  _sauce
+                ' > zsh-out
+                printf '%s\n' sso stray 'sso/*' 'stray/*' | diff - zsh-out
+                fish -c 'source ${self.packages.${pkgs.stdenv.hostPlatform.system}.sauce}/share/fish/vendor_completions.d/sauce.fish; complete -C "sauce edit s"' > fish-out
+                grep -Fx 'sso/*' fish-out
+
+                test ! -e "$TMPDIR/nix-runs"
                 touch $out
               '';
           gpg =

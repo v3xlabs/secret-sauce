@@ -1,8 +1,10 @@
 mod certificate;
 mod clipboard;
 mod color;
+mod complete;
 mod edit;
 mod expire;
+mod files;
 mod generate;
 mod get;
 mod gpg;
@@ -28,7 +30,8 @@ use std::{
     process::ExitCode,
 };
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, CommandFactory as _, Parser, Subcommand};
+use clap_complete::{CompleteEnv, engine::ArgValueCompleter};
 use sauce::format::{self, Date};
 
 use crate::{
@@ -72,6 +75,7 @@ enum Command {
     },
     /// Give a secret a value from stdin, or from a hidden prompt on a terminal.
     Set {
+        #[arg(add = ArgValueCompleter::new(complete::names))]
         name: String,
         /// The date the secret stops working, as YYYY-MM-DD.
         #[arg(long)]
@@ -89,6 +93,7 @@ enum Command {
     },
     /// Change the date a secret stops working, or clear it, and keep the value.
     Expire {
+        #[arg(add = ArgValueCompleter::new(complete::names))]
         name: String,
         /// The new date, as YYYY-MM-DD.
         #[arg(required_unless_present = "clear", conflicts_with = "clear")]
@@ -104,6 +109,7 @@ enum Command {
     /// Make new values for the secrets that match a name or a pattern with `*`, and ask first for a pattern.
     Rotate {
         /// A name, or a pattern where `*` stands for any text, such as 'sso/*'.
+        #[arg(add = ArgValueCompleter::new(complete::patterns))]
         pattern: String,
         #[command(flatten)]
         source: Source,
@@ -113,6 +119,7 @@ enum Command {
     /// Delete the .sauce.yaml file of a secret that no machine declares, and ask first on a terminal.
     Remove {
         /// A name, or a quoted pattern where `*` stands for any text, such as 'sso/*'.
+        #[arg(add = ArgValueCompleter::new(complete::leftovers))]
         pattern: String,
         /// List the files that would be removed, and remove nothing.
         #[arg(long)]
@@ -133,6 +140,7 @@ enum Command {
     /// Open a secret in $EDITOR. Confirm each secret when using a pattern.
     Edit {
         /// A name, or a quoted pattern where `*` stands for any text, such as 'sso/*'.
+        #[arg(add = ArgValueCompleter::new(complete::patterns))]
         pattern: String,
         #[command(flatten)]
         source: Source,
@@ -161,6 +169,7 @@ enum Command {
     /// Show facts about one secret. Use --copy or --print to request the value.
     Get {
         /// The exact name of the secret.
+        #[arg(add = ArgValueCompleter::new(complete::names))]
         name: String,
         /// Write the value to stdout, and nothing else.
         #[arg(long, conflicts_with = "copy")]
@@ -348,6 +357,9 @@ fn list(
 }
 
 fn main() -> ExitCode {
+    CompleteEnv::with_factory(Cli::command)
+        .var(complete::VARIABLE)
+        .complete();
     match run(Cli::parse().command) {
         Ok(exit) => exit,
         Err(error) => {

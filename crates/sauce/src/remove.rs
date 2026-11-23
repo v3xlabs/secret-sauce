@@ -1,5 +1,4 @@
 use std::{
-    collections::BTreeSet,
     fs,
     io::{self, IsTerminal as _, Write as _},
     path::{Path, PathBuf},
@@ -8,9 +7,9 @@ use std::{
 use sauce::format::{self, Name, NameError};
 
 use crate::{
+    files::{declared_files, sauce_files},
     manifest::{FolderError, Machines, RuleError, checked_path},
     rotate::{confirm, matches},
-    status::sauce_files,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -117,13 +116,9 @@ pub fn remove(
         }
     }
 
-    let declared: BTreeSet<_> = secrets
-        .values()
-        .map(|secret| root.join(&secret.definition.file))
-        .collect();
-    let mut files = Vec::new();
+    let declared = declared_files(&secrets, root);
     let mut unreadable = Vec::new();
-    sauce_files(root, &mut files, &mut unreadable);
+    let files = sauce_files(root, None, &mut unreadable);
     for (folder, error) in &unreadable {
         eprintln!(
             "warning: cannot read {}, so a file in it is not listed: {error}",

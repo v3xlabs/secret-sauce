@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     env,
     fs::{self, DirBuilder, File, OpenOptions},
     io::{self, BufReader, BufWriter, Write as _},
@@ -11,8 +12,10 @@ use rand::{RngCore as _, rngs::OsRng};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
+use sauce::format::Name;
+
 use crate::{
-    manifest::{Machines, ReadError, ReadManifests},
+    manifest::{Machines, ReadError, ReadManifests, Secret},
     spinner::Step,
 };
 
@@ -24,6 +27,9 @@ struct Cached {
     key: String,
     machines: Machines,
 }
+
+/// The machines of a saved evaluation.
+pub struct Saved(Machines);
 
 #[derive(Deserialize)]
 struct Metadata {
@@ -48,6 +54,13 @@ struct NixConfig {
 #[derive(Deserialize)]
 struct Setting<T> {
     value: T,
+}
+
+impl Saved {
+    /// The secrets that the machines declare, joined once, or none when the saved manifests break a rule.
+    pub fn secrets(&self) -> BTreeMap<Name, Secret<'_>> {
+        self.0.secrets().unwrap_or_default()
+    }
 }
 
 fn cache_key(flake: &Path) -> Option<String> {
@@ -149,6 +162,15 @@ pub fn load(flake: &Path) -> Result<ReadManifests, ReadError> {
     let cached = Cached { key, machines };
     let _ = save_cache(&path, &cached);
     Ok(cached.machines.into())
+}
+
+/// The saved evaluation of `flake`, if there is one.
+///
+/// It does not compare the key of the save, because the key comes from `nix`, and a name that has gone stale only costs a wrong suggestion.
+pub fn saved(flake: &Path) -> Option<Saved> {
+    cache_path(flake)
+        .and_then(|path| read_cache(&path))
+        .map(|cached| Saved(cached.machines))
 }
 
 fn read_cache(path: &Path) -> Option<Cached> {

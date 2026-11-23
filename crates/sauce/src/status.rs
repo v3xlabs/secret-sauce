@@ -1,6 +1,5 @@
 use std::{
-    collections::BTreeSet,
-    fs, io,
+    io,
     path::{Path, PathBuf},
 };
 
@@ -8,6 +7,7 @@ use sauce::format::{self, Date, Name};
 
 use crate::{
     color::{Color, Palette},
+    files::{declared_files, sauce_files},
     identity::{Admin, IdentityError, KeySource, OpenError},
     manifest::{ReadManifests, RuleError, Secret},
     spinner::Step,
@@ -271,13 +271,9 @@ pub fn status(
     }
 
     if !partial {
-        let declared: BTreeSet<_> = secrets
-            .values()
-            .map(|secret| root.join(&secret.definition.file))
-            .collect();
-        let mut files = Vec::new();
+        let declared = declared_files(&secrets, root);
         let mut unreadable = Vec::new();
-        sauce_files(root, &mut files, &mut unreadable);
+        let files = sauce_files(root, None, &mut unreadable);
         rows.extend(unreadable.into_iter().map(unreadable_row));
         for path in files.into_iter().filter(|path| !declared.contains(path)) {
             let shown = path
@@ -348,30 +344,4 @@ fn unreadable_row((folder, error): (PathBuf, io::Error)) -> Row {
             "cannot be read, so a .sauce.yaml file in it can be missing from this list: {error}"
         ),
     )
-}
-
-/// Collects every `.sauce.yaml` file under `folder`, and skips hidden folders and symbolic links.
-pub fn sauce_files(
-    folder: &Path,
-    files: &mut Vec<PathBuf>,
-    unreadable: &mut Vec<(PathBuf, io::Error)>,
-) {
-    let entries = match fs::read_dir(folder) {
-        Ok(entries) => entries,
-        Err(error) => {
-            unreadable.push((folder.to_owned(), error));
-            return;
-        }
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let Ok(kind) = entry.file_type() else {
-            continue;
-        };
-        if kind.is_dir() && !entry.file_name().to_string_lossy().starts_with('.') {
-            sauce_files(&path, files, unreadable);
-        } else if kind.is_file() && format::has_suffix(&path) {
-            files.push(path);
-        }
-    }
 }
