@@ -22,7 +22,7 @@ const CUBE_MIN_CHROMA: i32 = 80;
 const LUMA: u32 = 130;
 
 /// The relative luminance of WCAG of a cube color for a folder, which gives it a contrast of at least 3 to 1 on a white and on a black background.
-const CUBE_LUMINANCE: RangeInclusive<f32> = 0.105..=0.29;
+const CUBE_LUMINANCE: RangeInclusive<f32> = 0.1..=0.3;
 
 /// The strongest channel of a color before it is scaled, with a saturation of 65% and a lightness of 60%.
 const CHROMA: u32 = 133;
@@ -461,15 +461,36 @@ mod tests {
     }
 
     #[test]
-    fn colors_of_256_colors_keep_a_readable_violet() {
-        // The cube color (135, 95, 215) has a hue of 260 degrees and a contrast above 3 to 1 on white and on black.
-        let violet = 16 + 36 * 2 + 6 + 4;
-        assert!(
-            Depth::Indexed
-                .slots(usize::MAX)
-                .iter()
-                .any(|color| matches!(color, Color::Indexed(index) if *index == violet))
-        );
+    fn colors_of_256_colors_are_every_cube_color_that_suits_a_folder() {
+        let mut expected: Vec<u8> = Vec::new();
+        for (red, green, blue) in
+            (0..6).flat_map(|r| (0..6).flat_map(move |g| (0..6).map(move |b| (r, g, b))))
+        {
+            let rgb = [red, green, blue]
+                .map(|level| u8::try_from(CUBE_LEVELS[level]).expect("a level fits"));
+            let [r, g, b] = rgb.map(f64::from);
+            let chroma = r.max(g).max(b) - r.min(g).min(b);
+            let hue = (3.0_f64.sqrt() * (g - b))
+                .atan2(2.0 * r - g - b)
+                .to_degrees()
+                .rem_euclid(360.0);
+            let readable = contrast(rgb, [255; 3]) >= 3.0 && contrast(rgb, [0; 3]) >= 3.0;
+            if chroma >= 80.0 && (170.0..=320.0).contains(&hue) && readable {
+                expected.push(
+                    u8::try_from(16 + 36 * red + 6 * green + blue).expect("a cube index fits"),
+                );
+            }
+        }
+        let mut palette: Vec<u8> = Depth::Indexed
+            .slots(usize::MAX)
+            .into_iter()
+            .map(|color| match color {
+                Color::Indexed(index) => index,
+                _ => unreachable!("256 colors give indexed colors"),
+            })
+            .collect();
+        palette.sort_unstable();
+        assert_eq!(palette, expected);
     }
 
     #[test]
