@@ -933,13 +933,64 @@
                 fi
                 grep -F "gpg did not give a file key of 16 bytes" stderr
 
-                # gpg encrypts to the fingerprint of a subkey, but a read never matches it, so a write refuses it.
+                # A subkey fingerprint, as in .sops.yaml, writes a file that gpg alone opens, with a wrap for that subkey alone.
+                gpg --batch --passphrase "" --quick-add-key "$fingerprint" cv25519 encr never
                 subkey=$(gpg --with-colons --list-keys throwaway | awk -F: '/^sub/ { seen = 1; next } seen && /^fpr/ { print $10; exit }')
                 jq --arg key "$subkey" 'map_values(.adminRecipients.pgp += [$key])' ${manifests} > subkey.json
-                if printf token | sauce set ddclient/api-token --yes --manifest subkey.json --identity $admin 2> stderr; then
+                subflags="--manifest subkey.json"
+                subfile=example/secrets/ddclient/api-token.sauce.yaml
+                printf subkey-token | sauce set ddclient/api-token --yes $subflags --identity $admin
+                grep -x "    pgp: $subkey" $subfile
+                if grep -x "    pgp: $fingerprint" $subfile; then
                   exit 1
                 fi
-                grep -F "$subkey is not the fingerprint of a primary key" stderr
+                [[ $(sauce get ddclient/api-token --print $subflags) == subkey-token ]]
+
+                # A list and a status count the subkey fingerprint as the reader that the manifests declare, and the files of the primary fingerprint as another reader.
+                sauce status $subflags --identity $admin > status
+                if grep -E '^ddclient/api-token ' status; then
+                  exit 1
+                fi
+                grep -E '^backup/ssh-key +has other readers' status
+                sauce list $subflags --identity $admin > list
+                grep -E '^ddclient/api-token .* ✓$' list
+                # gpg lists the session key packet and then exits 2 on the encrypted data, which it cannot parse without the key.
+                packets=$(python -c 'import base64, sys; from pathlib import Path; s = Path(sys.argv[1]).read_text(); i = s.index("    pgp: " + sys.argv[2]); i = s.index("    wrap: ", i) + len("    wrap: "); w = s[i:s.index("\n", i)]; sys.stdout.buffer.write(base64.b64decode(w + "=" * (-len(w) % 4)))' $subfile "$subkey" | gpg --list-packets 2> /dev/null || true)
+                grep -F "keyid $(printf %s "$subkey" | cut -c25-40)" <<< "$packets"
+
+                # The subkey can also be listed as an additional decryption subkey of another certificate, and the file still opens.
+                gpg --batch --passphrase "" --quick-add-adsk "$other" "$subkey"
+                [[ $(sauce get ddclient/api-token --print $subflags) == subkey-token ]]
+
+                # A read of a subkey fingerprint accepts a wrap for that subkey only, and not one for another subkey of the certificate.
+                second=$(gpg --with-colons --list-keys throwaway | awk -F: '/^sub/ { seen = 1; next } seen && /^fpr/ { last = $10; seen = 0 } END { print last }')
+                [[ $second != "$subkey" ]]
+                hostile=$(head -c 16 /dev/urandom | gpg --no-options --batch --trust-model always --compress-algo none --no-literal --recipient "$second!" --encrypt | base64 -w 0 | tr -d =)
+                python -c 'import sys; from pathlib import Path; p = Path(sys.argv[1]); s = p.read_text(); i = s.index("    pgp: " + sys.argv[2]); i = s.index("    wrap: ", i) + len("    wrap: "); j = s.index("\n", i); p.write_text(s[:i] + sys.argv[3] + s[j:])' $subfile "$subkey" "$hostile"
+                if sauce get ddclient/api-token --print $subflags 2> stderr; then
+                  exit 1
+                fi
+                grep -F "the wrap is not for one encryption key of $subkey" stderr
+
+                # A fingerprint that is not in the keyring gets its own error.
+                absent=0123456789ABCDEF0123456789ABCDEF01234567
+                jq --arg key "$absent" 'map_values(.adminRecipients.pgp += [$key])' ${manifests} > absent.json
+                if printf token | sauce set ddclient/api-token --yes --manifest absent.json --identity $admin 2> stderr; then
+                  exit 1
+                fi
+                grep -F "$absent is not in the keyring of gpg; import the public key with \`gpg --import\`" stderr
+
+                # A subkey that gpg refuses names the primary key to use, because gpg encrypts to that subkey alone.
+                gpg --batch --passphrase "" --quick-add-key "$fingerprint" cv25519 encr never
+                expired=$(gpg --with-colons --list-keys throwaway | awk -F: '/^sub/ { seen = 1; next } seen && /^fpr/ { last = $10; seen = 0 } END { print last }')
+                gpg --batch --passphrase "" --quick-set-expire "$fingerprint" seconds=1 "$expired"
+                sleep 2
+                jq --arg key "$expired" 'map_values(.adminRecipients.pgp += [$key])' ${manifests} > expired.json
+                if printf token | sauce set ddclient/api-token --yes --manifest expired.json --identity $admin 2> stderr; then
+                  exit 1
+                fi
+                grep -F "$expired is a subkey, so gpg encrypts to that subkey alone" stderr
+                grep -F "check that $fingerprint is its primary key" stderr
                 ${pkgs.gnupg}/bin/gpgconf --kill gpg-agent
                 touch $out
               '';

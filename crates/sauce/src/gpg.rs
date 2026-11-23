@@ -1,4 +1,8 @@
 //! The GPG keys of an admin, through the `gpg` program on PATH.
+//!
+//! A GPG reader is named by the fingerprint of a primary key or of a subkey, as in sops.
+//! A primary fingerprint names its certificate, so any encryption key of that certificate opens the file.
+//! A subkey fingerprint names that one key, so gpg encrypts to it alone and only it opens the file.
 
 use std::{
     io::{self, Read as _, Write as _},
@@ -51,6 +55,10 @@ const AGE_KEY_VARIABLES: [&str; 3] = ["SAUCE_IDENTITY", "SOPS_AGE_KEY", "SOPS_AG
 /// The key ID in an `ENC_TO` status line for a recipient that the wrap hides.
 const HIDDEN_RECIPIENT: &str = "0000000000000000";
 
+/// The status line that gpg writes when it has no public key for a key that it lists.
+/// The text of the message beside it follows the locale, and this line does not.
+const NO_PUBLIC_KEY: &str = "ERROR keylist.getkey 9";
+
 /// The tag of a public-key encrypted session key packet.
 const SESSION_KEY: u8 = 1;
 
@@ -75,17 +83,31 @@ pub enum GpgError {
     #[error("gpg did not give a file key of {FILE_KEY_BYTES} bytes")]
     FileKey,
     #[error(
-        "the wrap is not for one encryption key of {0}, with a key ID that no other secret key has"
+        "the wrap is not for one encryption key of {0}, with a key ID that no other secret key has; a subkey fingerprint names that subkey alone"
     )]
     Recipient(String),
-    #[error("gpg decrypted the wrap with a key other than {0}")]
+    #[error(
+        "gpg decrypted the wrap with a key other than {0}; a subkey fingerprint names that subkey alone, and a primary fingerprint names its certificate"
+    )]
     DecryptionKey(String),
     #[error("gpg did not end within {} seconds", DEADLINE.as_secs())]
     Deadline,
+    #[error("gpg has no public key for the key that it was asked for")]
+    NoPublicKey,
+    #[error("{0} is not in the keyring of gpg; import the public key with `gpg --import`")]
+    NotInKeyring(String),
     #[error(
-        "{0} is not the fingerprint of a primary key in the keyring of gpg, and a GPG reader needs the fingerprint of its primary key"
+        "{fingerprint} is a subkey, so gpg encrypts to that subkey alone, and it refuses: {reason}; replace it with a subkey that gpg accepts, or, if its whole certificate may read, check that {primary} is its primary key and use that fingerprint"
     )]
-    NotPrimary(String),
+    Subkey {
+        fingerprint: String,
+        primary: String,
+        reason: String,
+    },
+    #[error(
+        "gpg wrote a message for more than the one key of {0}, for example because its certificate names an additional decryption subkey, which sauce does not take"
+    )]
+    MoreRecipients(String),
 }
 
 /// The certificates of gpg that have a secret key, or the stub of a card.
@@ -93,8 +115,6 @@ pub struct SecretKeys(Vec<Cert>);
 
 /// One certificate of a key listing of gpg.
 struct Cert {
-    /// The fingerprint of the primary key.
-    fingerprint: String,
     /// The primary key, then each subkey.
     keys: Vec<CertKey>,
 }
@@ -103,7 +123,23 @@ struct Cert {
 struct CertKey {
     /// The long key ID, which an `ENC_TO` status line names.
     id: String,
+    fingerprint: String,
     encrypts: bool,
+}
+
+impl Cert {
+    /// The fingerprint of the primary key.
+    fn primary(&self) -> &str {
+        &self
+            .keys
+            .first()
+            .expect("a certificate starts with its primary key")
+            .fingerprint
+    }
+
+    fn holds(&self, fingerprint: &str) -> bool {
+        self.keys.iter().any(|key| key.fingerprint == fingerprint)
+    }
 }
 
 impl SecretKeys {
@@ -118,15 +154,15 @@ impl SecretKeys {
         Ok(Self(certs(&String::from_utf8_lossy(&listing))))
     }
 
-    /// Unwraps the file key with gpg when the fingerprint is one of these keys, and gives `None` for any other key.
+    /// Unwraps the file key with gpg when the fingerprint is of a key of one of these certificates, and gives `None` for any other key.
     pub fn unwrap(&self, fingerprint: &str, wrap: &[u8]) -> Option<Result<FileKey, GpgError>> {
         self.0
             .iter()
-            .any(|cert| cert.fingerprint == fingerprint)
+            .any(|cert| cert.holds(fingerprint))
             .then(|| self.decrypt(fingerprint, wrap))
     }
 
-    /// Takes the file key out of a wrap whose one recipient is an encryption key of `fingerprint`, and refuses it before any use of a private key otherwise.
+    /// Takes the file key out of a wrap whose one recipient is the encryption key of `fingerprint`, or an encryption key of its certificate when it is a primary key, and refuses it before any use of a private key otherwise.
     ///
     /// gpg decrypts with whichever secret key the wrap names, so a wrap that names another local key would make gpg use that key, or ask for its PIN.
     /// `--unwrap` takes off the encryption layer and parses nothing inside it, so packets in the encrypted data, such as a message for a passphrase, never reach gpg.
@@ -138,15 +174,20 @@ impl SecretKeys {
         let (_, status) = run(&listed, wrap, 0)?;
         let recipient =
             recipient(&status).ok_or_else(|| GpgError::Recipient(fingerprint.to_owned()))?;
-        let mut keys = self
+        let keys: Vec<_> = self
             .0
             .iter()
             .flat_map(|cert| cert.keys.iter().map(move |key| (cert, key)))
-            .filter(|(_, key)| key.id == recipient);
-        let named = keys
-            .next()
-            .is_some_and(|(cert, key)| cert.fingerprint == fingerprint && key.encrypts);
-        if !named || keys.next().is_some() {
+            .filter(|(_, key)| key.id == recipient)
+            .collect();
+        // gpg lists one key under each certificate that has it, for example as an additional decryption subkey, and that is one key.
+        let one_key = keys
+            .iter()
+            .all(|(_, key)| key.fingerprint == keys[0].1.fingerprint);
+        let named = keys.iter().any(|(cert, key)| {
+            key.encrypts && (key.fingerprint == fingerprint || cert.primary() == fingerprint)
+        });
+        if !named || !one_key {
             return Err(GpgError::Recipient(fingerprint.to_owned()));
         }
 
@@ -158,11 +199,13 @@ impl SecretKeys {
         if !status_lines(&status).any(|line| line == "DECRYPTION_OKAY") {
             return Err(GpgError::Failed(message(&status)));
         }
-        // `DECRYPTION_KEY` names the key that gpg used, then the fingerprint of its primary key.
-        let primary = status_lines(&status)
+        // `DECRYPTION_KEY` names the fingerprint of the key that gpg used, then the fingerprint of its primary key.
+        let used = status_lines(&status)
             .find_map(|line| line.strip_prefix("DECRYPTION_KEY "))
-            .and_then(|rest| rest.split(' ').nth(1));
-        if primary != Some(fingerprint) {
+            .map(|rest| rest.split(' ').take(2).collect::<Vec<_>>())
+            .unwrap_or_default();
+        let vetted = keys[0].1.fingerprint.as_str();
+        if used.first() != Some(&vetted) || !used.contains(&fingerprint) {
             return Err(GpgError::DecryptionKey(fingerprint.to_owned()));
         }
         if output.len() != FILE_KEY_BYTES {
@@ -192,72 +235,95 @@ enum Pipe {
 /// Wraps the file key for the GPG key of `fingerprint`, with the public key in the keyring of gpg.
 ///
 /// The fingerprint in the Nix config is the trust anchor, so the web of trust of gpg has no say.
-/// gpg also takes the fingerprint of a subkey, which a read never matches, so a write refuses one.
+/// A primary key lets gpg choose an encryption key of its certificate.
+/// A subkey is exact: `!` makes gpg encrypt to that key and to no other key of the certificate, and refuse it when it cannot encrypt.
 /// `--no-literal` puts the 16 bytes of the file key in the encrypted data with no literal data packet around them, for `--unwrap` on a read.
 pub fn wrap(fingerprint: &str, file_key: &FileKey) -> io::Result<Vec<u8>> {
-    let (listing, _) = run(
-        &["--with-colons", "--list-keys", fingerprint],
-        &[],
-        LISTING_BYTES,
-    )
-    .map_err(io::Error::other)?;
-    if !certs(&String::from_utf8_lossy(&listing))
-        .iter()
-        .any(|cert| cert.fingerprint == fingerprint)
-    {
-        return Err(io::Error::other(GpgError::NotPrimary(
+    let listed = [
+        "--status-fd",
+        "2",
+        "--with-colons",
+        "--list-keys",
+        fingerprint,
+    ];
+    let (listing, _) = run(&listed, &[], LISTING_BYTES).map_err(|error| match error {
+        GpgError::NoPublicKey => io::Error::other(GpgError::NotInKeyring(fingerprint.to_owned())),
+        error => io::Error::other(error),
+    })?;
+    let certs = certs(&String::from_utf8_lossy(&listing));
+    let mut holders = certs.iter().filter(|cert| cert.holds(fingerprint));
+    let Some(holder) = holders.next() else {
+        return Err(io::Error::other(GpgError::NotInKeyring(
             fingerprint.to_owned(),
         )));
-    }
+    };
+    let subkey = certs.iter().all(|cert| cert.primary() != fingerprint);
+    let primary = (subkey && holders.next().is_none()).then(|| holder.primary().to_owned());
+    let recipient = if subkey {
+        format!("{fingerprint}!")
+    } else {
+        fingerprint.to_owned()
+    };
     let args = [
         "--trust-model",
         "always",
         "--compress-algo",
         "none",
         "--recipient",
-        fingerprint,
+        &recipient,
         "--no-literal",
         "--encrypt",
     ];
-    let (message, _) =
-        run(&args, file_key.expose_secret(), LARGEST_PGP_WRAP).map_err(io::Error::other)?;
+    let (message, _) = run(&args, file_key.expose_secret(), LARGEST_PGP_WRAP).map_err(|error| {
+        io::Error::other(match (error, primary) {
+            (GpgError::Failed(reason), Some(primary)) => GpgError::Subkey {
+                fingerprint: fingerprint.to_owned(),
+                primary,
+                reason,
+            },
+            (error, _) => error,
+        })
+    })?;
     if !is_wrap(&message) {
-        return Err(io::Error::other(GpgError::Packets));
+        return Err(io::Error::other(if session_keys(&message) > 1 {
+            GpgError::MoreRecipients(fingerprint.to_owned())
+        } else {
+            GpgError::Packets
+        }));
     }
     Ok(message.to_vec())
 }
 
-/// Reads the certificates of a listing of `--with-colons`, where a `fpr` record follows the `pub` or `sec` record of each primary key.
+/// Reads the certificates of a listing of `--with-colons`, where a `fpr` record follows the `pub`, `sec`, `sub` or `ssb` record of each key.
 fn certs(listing: &str) -> Vec<Cert> {
     let mut certs: Vec<Cert> = Vec::new();
-    let mut after_primary = false;
+    let mut after_key = false;
     for line in listing.lines() {
         let fields: Vec<&str> = line.split(':').collect();
         let field = |index: usize| fields.get(index).copied().unwrap_or_default();
         let primary = matches!(field(0), "pub" | "sec");
+        let key = primary || matches!(field(0), "sub" | "ssb");
         match field(0) {
             "pub" | "sec" | "sub" | "ssb" => {
                 let key = CertKey {
                     id: field(4).to_owned(),
+                    fingerprint: String::new(),
                     encrypts: field(11).contains('e'),
                 };
                 if primary {
-                    certs.push(Cert {
-                        fingerprint: String::new(),
-                        keys: vec![key],
-                    });
+                    certs.push(Cert { keys: vec![key] });
                 } else if let Some(cert) = certs.last_mut() {
                     cert.keys.push(key);
                 }
             }
-            "fpr" if after_primary => {
-                if let Some(cert) = certs.last_mut() {
-                    field(9).clone_into(&mut cert.fingerprint);
+            "fpr" if after_key => {
+                if let Some(key) = certs.last_mut().and_then(|cert| cert.keys.last_mut()) {
+                    field(9).clone_into(&mut key.fingerprint);
                 }
             }
             _ => {}
         }
-        after_primary = primary;
+        after_key = key;
     }
     certs
 }
@@ -363,7 +429,11 @@ fn run(
     };
     let stderr = String::from_utf8_lossy(&stderr).into_owned();
     if !status.success() {
-        return Err(GpgError::Failed(message(&stderr)));
+        return Err(if status_lines(&stderr).any(|line| line == NO_PUBLIC_KEY) {
+            GpgError::NoPublicKey
+        } else {
+            GpgError::Failed(message(&stderr))
+        });
     }
     written.map_err(GpgError::Run)?;
     Ok((output, stderr))
@@ -412,6 +482,20 @@ fn is_wrap(message: &[u8]) -> bool {
     count == 2 && tags[0] == SESSION_KEY && matches!(tags[1], ENCRYPTED | ENCRYPTED_OCB)
 }
 
+/// How many public-key encrypted session key packets start the message, which is one packet for each recipient.
+fn session_keys(message: &[u8]) -> usize {
+    let mut count = 0;
+    let mut rest = message;
+    while let Some((SESSION_KEY, length)) = packet(rest) {
+        let Some(next) = rest.get(length..) else {
+            break;
+        };
+        count += 1;
+        rest = next;
+    }
+    count
+}
+
 /// The tag of the first packet and its length with its header.
 ///
 /// It takes a header in the new or the old format with a definite length, and refuses a partial or an indeterminate length.
@@ -453,7 +537,7 @@ fn packet(bytes: &[u8]) -> Option<(u8, usize)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{certs, is_wrap, recipient};
+    use super::{certs, is_wrap, recipient, session_keys};
 
     /// A public-key encrypted session key packet and an encrypted data packet, both with a header of the new format.
     fn wrap() -> Vec<u8> {
@@ -475,6 +559,16 @@ mod tests {
     fn wrap_for_a_passphrase_is_refused() {
         // A symmetric-key encrypted session key packet, tag 3, then encrypted data.
         assert!(!is_wrap(&[0xc3, 1, 0, 0xd2, 1, 0]));
+    }
+
+    #[test]
+    fn extra_recipients_are_counted_by_their_session_key_packets() {
+        let mut two_readers = vec![0xc1, 1, 0];
+        two_readers.extend(wrap());
+        assert_eq!(session_keys(&two_readers), 2);
+        assert_eq!(session_keys(&wrap()), 1);
+        // One recipient and a packet of another kind is not an extra recipient.
+        assert_eq!(session_keys(&[0xc1, 1, 0, 0xcb, 1, 0]), 1);
     }
 
     #[test]
@@ -526,9 +620,11 @@ fpr:::::::::C776E9499E788192A91F6A8F0AA589284B30DBAB:
 
         assert_eq!(certs.len(), 1);
         assert_eq!(
-            certs[0].fingerprint,
+            certs[0].primary(),
             "2071113AFE99E29E0C390A980BE836D1B324C6CE"
         );
+        assert!(certs[0].holds("C776E9499E788192A91F6A8F0AA589284B30DBAB"));
+        assert!(!certs[0].holds("0BE836D1B324C6CE"));
         let keys: Vec<_> = certs[0]
             .keys
             .iter()

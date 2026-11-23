@@ -338,7 +338,7 @@ in
       pgp = mkOption {
         type = types.listOf (types.strMatching "[0-9A-F]{40}");
         default = [ ];
-        description = "The fingerprints of your own GPG keys, as 40 upper case hex characters, which read every secret of this machine.";
+        description = "The fingerprints of your own GPG keys, as 40 upper case hex characters, which read every secret of this machine. A fingerprint is the one of a primary key or of a subkey, as in `.sops.yaml`.";
       };
     };
 

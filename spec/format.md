@@ -44,8 +44,9 @@ generator: 5d1c09e7...
 - `keys` lists the readers.
   Each entry has `for`, which is `admin` or the name of a host, then the public key in `age` or `pgp`, then `wrap`.
   An age `wrap` is the stanzas that the age library returns for that key, one line each.
-  `pgp` is the fingerprint of the primary key of a GPG key, as 40 upper case hex characters, and it is valid only with `for: admin`, because a host reads with its age key.
-  A file has at most one entry for each fingerprint, so gpg gets at most one try for a key in each file.
+  `pgp` is the fingerprint of a GPG key, as 40 upper case hex characters, of its primary key or of one of its subkeys, and it is valid only with `for: admin`, because a host reads with its age key.
+  A primary fingerprint reads with any encryption key of its certificate, and a subkey fingerprint reads with that subkey alone, so a reader refuses a wrap for another key, and a decryption by another key, before it uses the file key.
+  A file has at most one entry for each fingerprint, so gpg gets at most one try for each fingerprint in each file, and a primary fingerprint and a subkey fingerprint of one key are two fingerprints.
   A GPG `wrap` follows `wrap:` on the same line.
   It is the OpenPGP message that gpg wrote for that key, in base64 with no padding, and it is at most 4096 bytes.
 
@@ -100,7 +101,7 @@ A `.sauce.yaml` file follows age where it can.
 
 - Each write makes a new 16-byte file key from a cryptographic random number generator, as age does.
 - `sauce` wraps the file key for each reader with the age library, as age does in its header, so classical, post-quantum and plugin keys work as they do in age.
-  For a GPG key, gpg encrypts the file key, with no compression, to the public key in the keyring of the writer.
+  For a GPG key, gpg encrypts the file key, with no compression, to the public key of that fingerprint in the keyring of the writer, and for a subkey to that subkey alone.
   The message is one public-key encrypted session key packet and then one integrity protected encrypted data packet, and a reader refuses any other packets before it runs gpg.
   The encrypted data holds the 16 bytes of the file key with no literal data packet around them, and a reader takes them with `gpg --unwrap` and refuses any other length, so gpg reads no packet inside the message.
 - HKDF-SHA-256 derives three separate 32-byte outputs from the file key, the key of `value`, the key of `facts` and `commitment`, with the labels `secret-sauce/1/value`, `secret-sauce/1/facts` and `secret-sauce/1/commitment`.

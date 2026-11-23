@@ -103,7 +103,7 @@ impl File {
                     r#for: host.to_owned(),
                     key: Key::Pgp(fingerprint.to_owned()),
                 };
-                // One entry for each fingerprint, so that gpg gets at most one try for a key in each file.
+                // One entry for each fingerprint, so that gpg gets at most one try for each fingerprint in each file.
                 let unique = fingerprints.insert(fingerprint);
                 lines.check((is_valid(&reader) && unique).then_some(()))?;
                 let wrap = pgp_wrap(lines.next("    wrap: ")?);
