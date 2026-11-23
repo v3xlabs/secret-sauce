@@ -41,6 +41,8 @@ generator: 5d1c09e7...
   It is not the name of the file on disk, and "Encryption" says how it is bound.
 - `commitment` binds the file to one file key, as "Encryption" says.
 - `facts` and `value` are the encrypted facts and the encrypted secret.
+  The secret is bytes, and a reader of the file gives them back as they are.
+  Typed values, not built yet, will store a list or a map as JSON text in one spelling, with no spaces and with the keys of a map in sorted order, and the declaration and never the file will say which type a value has.
 - `keys` lists the readers.
   Each entry has `for`, which is `admin` or the name of a host, then the public key in `age` or `pgp`, then `wrap`.
   An age `wrap` is the stanzas that the age library returns for that key, one line each.

@@ -109,6 +109,169 @@ sauce.templates.freshrss-env = {
 Two hosts share a secret by declaring the same name.
 Put the declaration in a module that both import and they cannot drift apart.
 
+## Typed values
+
+Not built yet.
+`sauce` stores and edits `string` values only, and the rest of this part is a plan.
+The edit buffer below is built for strings first, so a list or a map later comes in the same buffer with no migration.
+
+A secret holds a string, a list or a map.
+`type` in the declaration says which, and `string` is the default.
+
+One secret has one set of readers and one set of facts.
+So a list or a map is for values that share readers, an expiry date and an origin.
+
+An item of a list or a map is a string, a whole number, `true`, `false`, a list or a map.
+A whole number is from -9223372036854775808 to 9223372036854775807, which is 64 bits with a sign.
+A number outside that range is an error that says to write it as a string.
+There is no null and no decimal number.
+`sauce` must tell if a value changed, and `1.0` and `1.00` are one number with two spellings.
+Write a decimal as a string.
+`type` says `list` or `map`, and it says nothing about the items.
+An item is a string or a number by how you write it, as in a sops file.
+
+The type is in the declaration only.
+The manifest carries it, as it carries `maxLength`, and a `.sauce.yaml` file does not store it.
+A machine does not need the type, and one place for it cannot disagree with a second place.
+So the file format stays at version 1, and an older `sauce-install` writes the same file from the same bytes.
+`sauce` uses the type in two places.
+It refuses a value of another shape at a write, and it picks the form of the value in the edit buffer.
+`sauce` stops when two machines give one name two types, as it does for two generators.
+
+`generator` and `once` make strings only.
+A `list` or a `map` with a `generator` or a `once` fails at evaluation.
+The facts belong to the whole secret, so one generated item would need a `version`, a `generator` digest and a `revoke` of its own.
+A value that `sauce` makes stays a secret of its own.
+
+`value` holds a string as its bytes, and a list or a map as JSON text.
+That JSON has one spelling, with no spaces and with the keys of a map in sorted order.
+A key of a map is a string.
+A key that comes two times in one map is an error, in the edit buffer and in the JSON of `sauce set`, as it is in a `.sauce.yaml` file.
+The padding rule does not change.
+The bound is `maxLength`, in bytes of the stored value, or 252 bytes without it.
+The step follows the bound and never the size of the value.
+So a reader of the repository sees the type and the bound, and not the number of items or their lengths.
+
+On the host, the file at `/run/sauce/<name>` holds the stored bytes, a string as it is and a list or a map as JSON.
+There is no YAML form, no form with one item on each line, no env form and no choice for each secret.
+`sauce-install` already reads JSON, and YAML needs a new crate in the program that runs as root.
+One item on each line breaks on an item that holds a newline.
+systemd, Docker and dotenv read the quotes of an env file in three different ways.
+A service that needs another form gets it from a template.
+
+In a template, `config.sauce.placeholder."<name>"` stands for the whole stored value, for every type.
+`config.sauce.item` stands for one item of a list or a map.
+It takes the name of the secret and a path.
+In the path, a key of a map is a string, and an index of a list is a number that starts at 0.
+`config.sauce.item` fails at evaluation for a name that the machine does not have, for a secret that the machine defines as a `string`, and for an empty path.
+A machine that only reads the name with `sauce.read` cannot check the type.
+
+```nix
+sauce.templates.asterisk-trunk = {
+  owner = "asterisk";
+  content = ''
+    host=${config.sauce.item "asterisk/trunk" [ "host" ]}
+    port=${config.sauce.item "asterisk/trunk" [ "port" ]}
+    secret=${config.sauce.item "asterisk/trunk" [ "pin" ]}
+    allow=${config.sauce.item "asterisk/trunk" [ "codecs" 0 ]}
+  '';
+};
+```
+
+A string item goes in as its bytes, a number and a boolean in their JSON spelling, and a list or a map as JSON.
+`sauce-install` reads the path from the template text, and it parses the JSON of a secret only when a template reads an item of it.
+It still makes one pass over the template, so a value that holds a placeholder pulls in nothing.
+Only the item placeholder needs a new `sauce-install`, and a machine gets that from the same `flake.lock` as the template that uses it.
+
+`sauce set` of a list or a map reads JSON from stdin, and `sauce` stores it in the one spelling.
+On a terminal it stops and names `sauce edit`, because a hidden prompt takes one line.
+`sauce get` shows the type, and `--print` and `--copy` give the stored bytes.
+
+### A string
+
+A secret with no `type` is a `string`, and every secret of today is one.
+
+```nix
+sauce.secrets."asterisk/ari-password" = { };
+sauce.secrets."asterisk/env".maxLength = 1020;
+```
+
+`value` holds the bytes of the string.
+The bound is `maxLength` when the declaration has one, else the longest value that the generator or `once` can make, else 252 bytes.
+The file on the host holds the same bytes.
+A string has no items, so a template takes it whole, with `config.sauce.placeholder`.
+`sauce set` takes it from a hidden prompt, or from stdin.
+In the edit buffer it is one line, or a block when it has newlines.
+It is in double quotes when neither form gives back the same string.
+
+```yaml
+asterisk/ari-password: example-password
+
+asterisk/env: |
+  SIP_USER=1001
+  SIP_REALM=sip.example.com
+```
+
+### A list
+
+```nix
+sauce.secrets."asterisk/allowed".type = "list";
+```
+
+`value` holds `[1001,1002]`, which is 11 bytes of JSON.
+It has no `maxLength`, so the bound is 252 bytes of that JSON, and the secret takes the 256-byte step.
+The file on the host holds `[1001,1002]`.
+`config.sauce.item "asterisk/allowed" [ 0 ]` puts `1001` in a template.
+`sauce set asterisk/allowed` reads JSON from stdin, such as `[1001, 1002]`.
+In the edit buffer each item comes after `- `, and an empty list is `[]`.
+
+```yaml
+asterisk/allowed:
+  - 1001
+  - 1002
+```
+
+### A map
+
+```nix
+sauce.secrets."asterisk/trunk" = {
+  type = "map";
+  maxLength = 1020;
+};
+```
+
+`value` holds this JSON, which is 76 bytes.
+
+```json
+{"codecs":["opus","g722"],"host":"sip.example.com","pin":"0042","port":5060}
+```
+
+The bound is 1020 bytes of that JSON, so the secret takes the 1 KiB step.
+The file on the host holds the same JSON.
+`config.sauce.item "asterisk/trunk" [ "pin" ]` puts `0042` in a template, `[ "port" ]` puts `5060`, and `[ "codecs" ]` puts `["opus","g722"]`.
+`sauce set asterisk/trunk` reads JSON from stdin.
+In the edit buffer each item comes after its key and a `:`, and an empty map is `{}`.
+An item that is a list or a map takes the lines below its key, as `codecs` does.
+
+```yaml
+asterisk/trunk:
+  codecs:
+    - opus
+    - g722
+  host: sip.example.com
+  pin: "0042"
+  port: 5060
+```
+
+### A schema for each secret
+
+Not built yet, and this part only keeps the place for it.
+A list or a map can be a whole document, such as a JSON list of people for kanidm.
+A secret may later declare `schema`, a JSON Schema for its value, in the declaration and the manifest, as it declares `type`, and never in a `.sauce.yaml` file.
+`sauce` would then check a value against it before a write, as it checks the type.
+How the edit buffer hands a schema to an editor is left open.
+A YAML language server reads `pw: 8080` as a number and an empty entry as null, where the buffer reads a string and no value, so that comes with the schema work and its own rules.
+
 ## Making and changing secrets
 
 `sauce generate` looks at what your hosts declare and creates every secret that does not exist yet.
@@ -124,7 +287,7 @@ It skips secrets with `once` and secrets you brought yourself.
 It shows what it is about to do and asks first.
 
 `sauce set <name>` takes a value from a hidden prompt.
-`sauce edit 'asterisk/*'` opens only the matching secrets in `$EDITOR`, not the whole lot.
+`sauce edit 'asterisk/*'` opens the matching secrets in one `$EDITOR` buffer, as "Editing in one buffer" says.
 `sauce rename` moves a secret and tells you which lines of Nix still use the old name.
 `sauce remove <name>` deletes the file of a secret that no machine declares anymore, so the declaration goes first.
 
@@ -169,6 +332,158 @@ A secret with no visible definition may be on a failed machine.
 `sauce` never saves a partial manifest, so each read repeats the evaluations while a machine is broken.
 On a flake with nine machines and one failure, this took about 3.6 seconds per read.
 Commands that write stop before changing any files, because a failed machine could be a reader of any secret.
+
+## Editing in one buffer
+
+`sauce edit` with a pattern opens every matching secret in one buffer, in one run of `$EDITOR`.
+
+The first build of this buffer holds `string` secrets only.
+The list and map forms, the rules for items and the type errors below come with typed values, in the same buffer.
+
+```yaml
+# sauce edit 'asterisk/*'
+# Change values only. sauce does not read a line that starts with #.
+
+# readers: admin, voice. no file yet. list, at most 252 bytes of JSON.
+asterisk/allowed:
+
+# readers: admin, voice. made by: set. expires: 2027-02-10. string, at most 252 bytes.
+asterisk/ari-password: example-password
+
+# readers: admin, voice. made by: set. string, at most 1020 bytes.
+asterisk/env: |
+  SIP_USER=1001
+  SIP_REALM=sip.example.com
+
+# readers: admin, voice. made by: set. map, at most 1020 bytes of JSON.
+asterisk/trunk:
+  codecs:
+    - opus
+    - g722
+  host: sip.example.com
+  pin: "0042"
+  port: 5060
+
+# asterisk/session-key is made by a generator, and `sauce rotate asterisk/session-key` makes a new value.
+```
+
+Each matched secret is one top-level entry, with its name as the key, in the order of the names.
+`sauce edit` with an exact name opens the same buffer with one entry, so there is one format for both.
+The comment above an entry gives the readers, how the secret is made, the expiry date, the type and the bound.
+`sauce` reads no comment, so a changed comment changes nothing.
+
+The buffer is a file of mode 0600, in a folder of mode 0700 in `$XDG_RUNTIME_DIR`, which must be a ramfs or a tmpfs mounted with `noswap`.
+When the first word of `$EDITOR`, in quotes or not, is `vim` or `nvim`, `sauce` puts `-n -i NONE -c 'set nobackup nowritebackup noundofile'` right after it at every run of the editor, so vim keeps no swap, backup, undo, viminfo or ShaDa file.
+A wrapper script and any other editor get no options, so set them up to keep none of these files.
+`sauce` removes the folder when the edit ends.
+The name of the file ends in `.yaml`, so the editor colours it.
+
+Before the buffer opens, each secret that has a file must have the readers that the machines declare, as for one value today.
+Else `sauce edit` stops and names `sauce generate`, so an edit never changes who can read a value.
+A new file gets the declared readers.
+
+`sauce edit '*'` is refused, and any other pattern opens the buffer with no question.
+A pattern that matches no declared secret stops with an error, and no editor opens.
+
+The declared type decides how `sauce` reads an entry.
+Under a `string`, the texts `8080`, `no` and `0042` are strings.
+
+`sauce` writes the buffer itself, in these forms.
+
+- A string is one line.
+- A string with newlines is a block with `|`, `|-` or `|+`, so the newline at the end is exact.
+  `sauce` writes the block form only for a `string` secret.
+- A list has `- ` before each item, and an empty list is `[]`.
+- A map has `key: value` for each item, and an empty map is `{}`.
+- A string that the forms above cannot hold is in double quotes, with the escapes of JSON.
+
+`sauce` writes a string plain, or as a block, only when the reader gives back the same string.
+In every other case it writes the string in double quotes, such as `"a: b"`, `"#x"`, `" x"` and `"\"x\""`.
+The rule is the same for a `string` secret, for a string item and for a key of a map.
+A string item with a newline is in double quotes with `\n`.
+
+The YAML crate gives `sauce` each scalar with its style, and `sauce` gives a plain item of a list or a map its type by these rules.
+
+- A whole number in the spelling of JSON, such as `5060` or `-7`, is a whole number.
+- A number with a leading zero or a `+`, such as `0042` or `+5`, is an error that says to write it in double quotes, so `pin: 0042` never becomes the number 42.
+- `true` and `false` are booleans, and no other text is a boolean.
+- A decimal number, `null`, `~` and no text are errors.
+- All other text is a string.
+- A scalar in quotes or in a block is a string, in every place.
+- A key of a map is a string in every style, so the key `5060` is the string `5060`.
+
+So `sauce` writes the string items `0042`, `+5`, `1.5` and the empty string as `"0042"`, `"+5"`, `"1.5"` and `""`, and it writes the string item `no` plain.
+
+`sauce` reads the buffer with the YAML crate `saphyr-parser`, and a `.sauce.yaml` file keeps its own reader.
+So the buffer accepts YAML that `sauce` does not write.
+
+- A list as `[a, b]` and a map as `{a: b}`, and the items inside follow the rules above.
+- Single quotes.
+- A `>` block, and a block as an item.
+- A plain string on more than one line.
+- A comment at the end of a line.
+
+These are errors.
+
+- An anchor and an alias.
+- A tag such as `!!str`, because a tag is a second way to give a type, and the declared type decides.
+- A second document.
+- A key that is a list or a map.
+
+`<<` is a key like any other, with no merge.
+`sauce` gives the line number of each error, and you correct the line in the same buffer.
+
+Before the editor opens, `sauce` reads the buffer that it wrote and compares each value with the original.
+A value that does not come back byte for byte is left out, with a comment that names `sauce set`.
+With the double quotes, only a value that is not UTF-8 text is such a value.
+
+With a pattern, the buffer leaves out a secret with a `generator` or a `once`.
+A comment names `sauce rotate` for a `generator`, and `sauce edit` with the exact name for a `once`, because `sauce rotate` refuses a `once`.
+A generated secret with no file yet is left out with a comment that names `sauce generate`.
+An edit by accident in a long buffer clears the `generator` fact.
+Then `sauce get` says that `sauce set` made the secret, and `sauce status` no longer warns when the declaration changes.
+`sauce rotate` still makes a new value for a secret with a `generator`, because it works from the declaration.
+An exact name still opens such a secret when it has a file, and with no file it stops and names `sauce generate`.
+A key pair never opens, and `sauce rotate` makes a new one.
+The comment for each secret that the buffer leaves out comes after the last entry.
+When the buffer leaves out every match, no editor opens, and `sauce edit` prints the comments.
+
+A secret that you bring yourself and that has no file yet is an empty entry, and its comment says `no file yet`.
+A value there makes the file, with `version` 1 and the `set` date of today.
+A list or a map needs a way in that is not argv, shell history or a plain file on disk, and the buffer is that way.
+
+`sauce` accepts each name that it put in the buffer one time, and any other name is an error.
+An entry that you remove does not change its secret, and `sauce edit` never deletes a secret.
+An empty entry, `name:` or `name: ""`, is no value.
+It leaves a secret with no file as it is, and it is an error for a secret that has a value, as an empty value is for `sauce set`.
+Under a `string`, any other text is the value as it is written, `null` and `~` included.
+
+`sauce` writes only the secrets that changed.
+It compares what it read with the old value, a string by its bytes and a list or a map by its stored JSON.
+So another order of keys or another indentation is no change.
+A secret that did not change keeps its file byte for byte, and its bound is not checked, so a value that a lowered bound left in place does not stop an edit of another secret.
+A changed secret gets `version` plus 1 and the `set` date of today.
+
+`sauce` finds every error before the first write.
+An error is text that does not parse, a value of the wrong type, a changed value over its bound or a bad name.
+`sauce` then opens the same text again, with the errors as comment lines at the top.
+It replaces the error lines of the round before, so the line numbers stay correct in each round.
+Each error gives a fixed reason and its line in the buffer that opens, and the name of the secret when the line belongs to an entry of the buffer.
+It never quotes the text of the buffer, so a value that you typed in the wrong place does not reach the error lines.
+
+```yaml
+# asterisk/allowed, line 7: the type is list, and this entry is not a list.
+# asterisk/trunk, line 24: port is a decimal number. Write it as a string.
+# line 30: this key is not the name of a secret in this buffer.
+```
+
+No message on the terminal quotes a value.
+You leave with no write when the editor exits with an error, or when you save a buffer with errors and change nothing below its error lines since the round before.
+
+`sauce` writes the changed secrets one at a time, each with the lock and the check of "Making and changing secrets".
+When a secret changed on disk while the editor was open, `sauce` refuses that secret only, writes the others, names it and exits nonzero.
+Each secret is one file with a `version` of its own, and a write of several files is not one transaction.
+The edit of that one secret is lost.
 
 ## What ends up in git
 
@@ -312,6 +627,10 @@ Padding hides a value only inside what you declared.
 `length = 29` in a public config tells everybody the length.
 Use `min` and `max` when the length should stay private.
 
+With typed values, the type of a secret and the item paths in a template are plain text in your config.
+So everybody learns that `asterisk/trunk` is a map with a `pin`.
+A secret that must hide its shape stays a `string` that holds JSON, and then no template reads one item of it.
+
 Anybody who can push to your repository can swap a secret for one they know, or change the key of a host.
 `sauce generate` and `sauce set` show every key that is about to gain access to an existing secret and ask before they write.
 Read that prompt.
@@ -321,6 +640,21 @@ The old version is still in git, which is why `sauce exposure` exists.
 
 A secret shared by two hosts changes on each host when that host is deployed.
 Between the two deploys they disagree.
+
+With typed values, a template that reads an item that the list or the map does not have fails the switch on the machine, not the build, and the current secrets stay.
+The manifest does not know which items a template reads, so `sauce` cannot find this earlier.
+
+With typed values, after you change the `type` of a secret that has a file, the file keeps the old value until the next write.
+When the old value does not fit the new type, `sauce edit` shows an empty entry with a comment, and never a guess at the value.
+
+One buffer of `sauce edit` holds many values, so an editor that keeps undo, swap or yank files outside the buffer folder keeps more of them than with one value.
+
+In the buffer, text after ` #` in a plain value is a comment, so `pw: abc #1` is read as `abc`.
+`sauce` writes such a string in double quotes, and you type it in quotes.
+
+The YAML parser keeps copies of the values of the buffer in memory, and `sauce` does not wipe them before the process ends.
+
+An admin with only a GPG key gets one card operation for each file that the buffer opens.
 
 A post-quantum secret with a GPG reader is only as strong as the GPG key.
 `sauce status` points those out.
