@@ -107,6 +107,9 @@ set ddclient/api-token, version 1
 ```
 
 `sauce set` also reads the value from a pipe, as it is, with no newline removed.
+When the machines declare other readers than the file has, `sauce set` lists the keys that change and asks before it takes the value, as `sauce generate` does.
+With the value on a pipe there is no question, so `--yes` approves the change.
+A key that loses access while the value stays the same marks the secret `revoke`.
 
 Look at the secret.
 

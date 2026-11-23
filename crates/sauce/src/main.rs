@@ -76,6 +76,9 @@ enum Command {
         /// The date a provider issued the secret, as YYYY-MM-DD.
         #[arg(long)]
         issued: Option<Date>,
+        /// Approve a change of readers with no question, such as when stdin gives the value.
+        #[arg(long)]
+        yes: bool,
         #[command(flatten)]
         source: Source,
         #[command(flatten)]
@@ -363,6 +366,7 @@ fn run(command: Command) -> Result<ExitCode, Box<dyn Error>> {
             name,
             expires,
             issued,
+            yes,
             source,
             identity,
         } => {
@@ -374,6 +378,7 @@ fn run(command: Command) -> Result<ExitCode, Box<dyn Error>> {
                 &name,
                 dates,
                 identity.file.as_deref(),
+                yes,
             )?)
         }
         Command::Import {

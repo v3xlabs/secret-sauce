@@ -404,6 +404,53 @@
                 [[ $(grep '^value: ' example/secrets/ddclient/api-token.sauce.yaml | cut -d' ' -f2 | base64 -d | wc -c) -eq 8208 ]]
                 touch $out
               '';
+          readers =
+            pkgs.runCommand "sauce-readers"
+              {
+                nativeBuildInputs = [
+                  self.packages.${pkgs.stdenv.hostPlatform.system}.sauce
+                  pkgs.util-linux
+                ];
+              }
+              ''
+                mkdir checkout
+                cp -r ${self}/example checkout/
+                chmod -R u+w checkout
+                cd checkout
+                flags="--manifest ${manifests}"
+                wider="--manifest ${widerManifests}"
+                export SAUCE_IDENTITY=example/snakeoil/admin.key
+                files() { find example/secrets -type f | sort | xargs sha256sum; }
+                sauce generate $flags
+                printf token | sauce set ddclient/api-token $flags
+                files > before
+
+                if printf token | sauce set ddclient/api-token $wider 2> error; then exit 1; fi
+                grep -E '^  ddclient/api-token  gets offsite age1[a-z0-9]+$' error
+                grep -F -- '--yes' error
+                diff before <(files)
+                if script -qec "sauce set ddclient/api-token $wider" /dev/null <<< n > refused; then exit 1; fi
+                grep -F 'Encrypt the value for these readers? [y/N]' refused
+                diff before <(files)
+
+                script -qec "sauce set ddclient/api-token $wider" /dev/null <<< $'y\ntoken' > approved
+                grep -F 'set ddclient/api-token, version 2' approved
+                [[ $(sauce get ddclient/api-token --print $wider --identity example/snakeoil/offsite.key) == token ]]
+
+                printf token | sauce set ddclient/api-token --yes $flags 2> error > out
+                grep -E '^  ddclient/api-token  loses offsite age1[a-z0-9]+$' error
+                grep -x 'ddclient/api-token is marked revoke, because the value is the same and a former reader knows it' out
+                sauce get ddclient/api-token $flags | grep -x 'revoke: a former reader knows this value'
+
+                script -qec "sauce set ddclient/api-token $wider" /dev/null <<< $'y\ntoken' > approved
+                script -qec "sauce set ddclient/api-token $flags" /dev/null <<< $'y\nfresh' > approved
+                if grep -F 'is marked revoke' approved; then exit 1; fi
+                sauce get ddclient/api-token $flags > facts
+                grep -x 'version: 5' facts
+                if grep '^revoke:' facts; then exit 1; fi
+                [[ $(sauce get ddclient/api-token --print $flags) == fresh ]]
+                touch $out
+              '';
           daily =
             pkgs.runCommand "sauce-daily"
               {
@@ -457,7 +504,7 @@
 
                 script -qec "sauce generate --manifest ${widerManifests}" /dev/null <<< y
                 script -qec "sauce generate $flags" /dev/null <<< y
-                printf edited-token | sauce set ddclient/api-token $flags | grep -x 'ddclient/api-token stays marked revoke, because the value is the same as before'
+                printf edited-token | sauce set ddclient/api-token $flags | grep -x 'ddclient/api-token is marked revoke, because the value is the same and a former reader knows it'
 
                 printf '%s\n' sso/hedgedoc sso/miniflux | diff - <(sauce search sso $flags)
                 if copied=$(sauce get sso/hedgedoc --copy $flags); then
@@ -889,7 +936,7 @@
                 # gpg encrypts to the fingerprint of a subkey, but a read never matches it, so a write refuses it.
                 subkey=$(gpg --with-colons --list-keys throwaway | awk -F: '/^sub/ { seen = 1; next } seen && /^fpr/ { print $10; exit }')
                 jq --arg key "$subkey" 'map_values(.adminRecipients.pgp += [$key])' ${manifests} > subkey.json
-                if printf token | sauce set ddclient/api-token --manifest subkey.json --identity $admin 2> stderr; then
+                if printf token | sauce set ddclient/api-token --yes --manifest subkey.json --identity $admin 2> stderr; then
                   exit 1
                 fi
                 grep -F "$subkey is not the fingerprint of a primary key" stderr

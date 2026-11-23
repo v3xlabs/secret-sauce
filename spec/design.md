@@ -297,7 +297,7 @@ Padding hides a value only inside what you declared.
 Use `min` and `max` when the length should stay private.
 
 Anybody who can push to your repository can swap a secret for one they know, or change the key of a host.
-`sauce generate` shows every key that is about to gain access to an existing secret and asks before it re-encrypts.
+`sauce generate` and `sauce set` show every key that is about to gain access to an existing secret and ask before they write.
 Read that prompt.
 
 Rotating a secret does not take back what an old key could read.

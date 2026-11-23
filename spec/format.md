@@ -160,7 +160,7 @@ An old reader can still open the old files.
 
 The format does not show who wrote a file.
 Writing needs public keys only, so anybody who can push to your repository can replace a file, put back an older one, or add a reader.
-`sauce generate` shows every key that is about to gain access and asks first.
+`sauce generate` and `sauce set` show every key that is about to gain access and ask first.
 
 ## What is different from sops
 

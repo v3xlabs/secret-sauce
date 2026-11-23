@@ -87,9 +87,14 @@ struct Change<'a> {
     path: PathBuf,
     text: String,
     readers: &'a [Reader],
+    access: ReaderChange<'a>,
+    bound: usize,
+}
+
+/// The readers that a secret gains and loses, from the readers of its file to the declared ones.
+pub struct ReaderChange<'a> {
     gained: Vec<&'a Reader>,
     lost: Vec<Reader>,
-    bound: usize,
 }
 
 struct Creation<'a> {
@@ -97,6 +102,31 @@ struct Creation<'a> {
     secret: &'a Secret<'a>,
     path: PathBuf,
     recipe: Recipe,
+}
+
+impl<'a> ReaderChange<'a> {
+    pub fn new(found: &[Reader], declared: &'a [Reader]) -> Self {
+        Self {
+            gained: declared
+                .iter()
+                .filter(|reader| !found.contains(reader))
+                .collect(),
+            lost: found
+                .iter()
+                .filter(|reader| !declared.contains(reader))
+                .cloned()
+                .collect(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.gained.is_empty() && self.lost.is_empty()
+    }
+
+    /// Whether a reader of the file is not declared, so that it knows the value that the file holds.
+    pub fn loses(&self) -> bool {
+        !self.lost.is_empty()
+    }
 }
 
 /// Creates the file of every secret that `sauce` can make and that has none, and re-encrypts every file whose readers changed.
@@ -162,9 +192,7 @@ fn apply(
     identity: Option<&Path>,
     palette: Palette,
 ) -> Result<(), GenerateError> {
-    let readers_change = changes
-        .iter()
-        .any(|change| !change.gained.is_empty() || !change.lost.is_empty());
+    let readers_change = changes.iter().any(|change| !change.access.is_empty());
     if readers_change && !confirm(&changes, creations.len()).map_err(GenerateError::Prompt)? {
         return Err(GenerateError::NotConfirmed);
     }
@@ -213,7 +241,7 @@ fn apply(
                     bound: change.bound,
                 });
             }
-            facts.revoke |= !change.lost.is_empty();
+            facts.revoke |= change.access.loses();
             let text = format::write(
                 change.name,
                 &value,
@@ -316,46 +344,44 @@ fn summarize(created: usize, reencrypted: usize, unset: &[&Name], palette: Palet
     }
 }
 
-/// Prints every reader that changes, with every key that gets access to a value that exists, and asks on the terminal.
+/// Asks on the terminal whether to apply the reader changes of `changes` and create `pending` files.
 fn confirm(changes: &[Change<'_>], pending: usize) -> io::Result<bool> {
+    print_reader_changes(changes.iter().map(|change| (change.name, &change.access)))?;
+    let question = match pending {
+        0 => "Encrypt these secrets again with the key of an admin?".to_owned(),
+        1 => "Apply reader changes and create 1 missing file?".to_owned(),
+        count => format!("Apply reader changes and create {count} missing files?"),
+    };
+    ask(&question)
+}
+
+/// Prints every reader that changes, with every key that gets access to a value that exists.
+pub fn print_reader_changes<'a, 'b: 'a>(
+    changes: impl IntoIterator<Item = (&'a Name, &'a ReaderChange<'b>)>,
+) -> io::Result<()> {
     let mut stderr = io::stderr().lock();
     writeln!(
         stderr,
         "These readers change. A key that gets access learns a value that exists:"
     )?;
-    for change in changes {
+    for (name, change) in changes {
         for reader in &change.gained {
-            writeln!(
-                stderr,
-                "  {}  gets {} {}",
-                change.name, reader.r#for, reader.key
-            )?;
+            writeln!(stderr, "  {name}  gets {} {}", reader.r#for, reader.key)?;
         }
         for reader in &change.lost {
-            writeln!(
-                stderr,
-                "  {}  loses {} {}",
-                change.name, reader.r#for, reader.key
-            )?;
+            writeln!(stderr, "  {name}  loses {} {}", reader.r#for, reader.key)?;
         }
     }
+    Ok(())
+}
+
+/// Asks a yes or no question on the terminal, and gives `false` with no terminal.
+pub fn ask(question: &str) -> io::Result<bool> {
+    let mut stderr = io::stderr().lock();
     if !(io::stdin().is_terminal() && stderr.is_terminal()) {
         return Ok(false);
     }
-    match pending {
-        0 => write!(
-            stderr,
-            "Encrypt these secrets again with the key of an admin? [y/N] "
-        )?,
-        1 => write!(
-            stderr,
-            "Apply reader changes and create 1 missing file? [y/N] "
-        )?,
-        count => write!(
-            stderr,
-            "Apply reader changes and create {count} missing files? [y/N] "
-        )?,
-    }
+    write!(stderr, "{question} [y/N] ")?;
     stderr.flush()?;
     let mut answer = String::new();
     io::stdin().lock().read_line(&mut answer)?;
@@ -421,22 +447,13 @@ fn step<'a>(
             found,
         });
     }
-    let lost: Vec<_> = readers
-        .iter()
-        .filter(|reader| !secret.readers.contains(reader))
-        .cloned()
-        .collect();
-    let gained: Vec<_> = secret
-        .readers
-        .iter()
-        .filter(|reader| !readers.contains(reader))
-        .collect();
+    let access = ReaderChange::new(&readers, &secret.readers);
     let bound = secret.definition.bound(recipe.as_ref());
     let restep = !format::has_step(&text, bound).map_err(|source| GenerateError::Parse {
         path: path.clone(),
         source,
     })?;
-    if lost.is_empty() && gained.is_empty() && !restep {
+    if access.is_empty() && !restep {
         return Ok(Step::None);
     }
     Ok(Step::Change(Change {
@@ -444,8 +461,7 @@ fn step<'a>(
         path,
         text,
         readers: &secret.readers,
-        gained,
-        lost,
+        access,
         bound,
     }))
 }

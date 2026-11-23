@@ -6,7 +6,8 @@ use std::{
 use sauce::format::{self, Date, Facts, Name, NameError, Value};
 
 use crate::{
-    generate, gpg,
+    generate::{self, ReaderChange},
+    gpg,
     identity::{Admin, IdentityError, OpenError},
     make::{Recipe, RecipeError},
     manifest::{FolderError, Machines, RuleError},
@@ -39,6 +40,12 @@ pub enum SetError {
     },
     #[error("cannot read the value: {0}")]
     Value(#[source] io::Error),
+    #[error("cannot ask on the terminal: {0}")]
+    Prompt(#[source] io::Error),
+    #[error(
+        "reader changes not approved; no files changed, and --yes approves them with no terminal"
+    )]
+    NotConfirmed,
     #[error("the value is empty")]
     Empty,
     #[error(transparent)]
@@ -66,12 +73,14 @@ pub struct Dates {
 ///
 /// A new file needs no private key.
 /// A file that exists needs the key of an admin, so that the new value keeps the facts of the old one.
+/// When its readers are not the declared ones, the change needs `yes` or an answer on the terminal.
 pub fn set(
     machines: &Machines,
     root: &Path,
     name: &str,
     dates: Dates,
     identity: Option<&Path>,
+    yes: bool,
 ) -> Result<(), SetError> {
     let name = name.parse::<Name>()?;
     let secrets = machines.secrets()?;
@@ -87,11 +96,27 @@ pub fn set(
     let old = match format::load(&path) {
         Ok(text) => {
             let _step = Step::show(format!("Opening {name}…"));
-            Some(Admin::find(identity)?.open(&text, &name)?)
+            let opened = Admin::find(identity)?.open(&text, &name)?;
+            // `open` authenticates the readers of the file, so an admin wrote this list.
+            let (_, readers) = format::look(&text).expect("`open` parsed the same text");
+            Some((opened, readers))
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => None,
         Err(source) => return Err(SetError::Read { path, source }),
     };
+    let reader_change = old
+        .as_ref()
+        .map(|(_, readers)| ReaderChange::new(readers, &secret.readers));
+    if let Some(change) = reader_change.as_ref().filter(|change| !change.is_empty()) {
+        // The terminal shows the declared readers, so they are checked before they are printed.
+        format::validate_readers(&secret.readers)?;
+        generate::print_reader_changes([(&name, change)]).map_err(SetError::Prompt)?;
+        if !yes
+            && !generate::ask("Encrypt the value for these readers?").map_err(SetError::Prompt)?
+        {
+            return Err(SetError::NotConfirmed);
+        }
+    }
 
     let value = if io::stdin().is_terminal() {
         rpassword::prompt_password(format!("Value of {name}: ")).map(String::into_bytes)
@@ -109,17 +134,18 @@ pub fn set(
         return Err(SetError::Empty);
     }
 
-    // A former reader knows the old value, so only a new value clears `revoke`.
-    let revoke = old
-        .as_ref()
-        .is_some_and(|(old_value, old)| old.revoke && old_value.expose() == value.expose());
+    // A former reader knows the old value, so a reader that goes marks it revoke, and only a new value clears `revoke`.
+    let lost = reader_change.is_some_and(|change| change.loses());
+    let revoke = old.as_ref().is_some_and(|((old_value, old), _)| {
+        (old.revoke || lost) && old_value.expose() == value.expose()
+    });
     let facts = Facts {
-        version: old.as_ref().map_or(1, |(_, old)| old.version + 1),
+        version: old.as_ref().map_or(1, |((_, old), _)| old.version + 1),
         set: Date::today(),
         issued: dates.issued,
         expires: dates.expires,
         generator: None,
-        formerly: old.map(|(_, old)| old.formerly).unwrap_or_default(),
+        formerly: old.map(|((_, old), _)| old.formerly).unwrap_or_default(),
         revoke,
     };
     let step = Step::show(format!("Encrypting {name}…"));
@@ -131,7 +157,9 @@ pub fn set(
     drop(step);
     println!("set {name}, version {}", facts.version);
     if revoke {
-        println!("{name} stays marked revoke, because the value is the same as before");
+        println!(
+            "{name} is marked revoke, because the value is the same and a former reader knows it"
+        );
     }
     Ok(())
 }
