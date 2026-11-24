@@ -1,11 +1,8 @@
 use std::fs::{self, DirBuilder, File, OpenOptions, Permissions};
 use std::io::{self, Read, Write};
-use std::os::unix::fs::{
-    DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt, fchown, symlink,
-};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt, fchown};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use age::x25519;
 use sauce::format::{self, Name, NameError, Opener, ReadError};
@@ -13,6 +10,7 @@ use sauce::ssh::{self, KeyError};
 use serde::Deserialize;
 use zeroize::Zeroizing;
 
+use crate::generations::{GenerationError, Generations};
 use crate::ids::Ids;
 use crate::key::{KeyFile, KeyFileError};
 
@@ -68,6 +66,8 @@ pub enum Error {
     #[error("{0} holds no age X25519 identity")]
     Identity(PathBuf),
     #[error(transparent)]
+    Generation(#[from] GenerationError),
+    #[error(transparent)]
     KeyFile(#[from] KeyFileError),
     #[error(
         "this machine has no key, because sauce.identityFile is not set and no path in sauce.age.sshKeyPaths holds an ed25519 key that sauce-install can read"
@@ -79,10 +79,6 @@ pub enum Error {
     Mode { mode: String, name: String },
     #[error("{name} is not a valid name: {source}")]
     Name { name: String, source: NameError },
-    #[error(
-        "{0} is in the way, because it is not a link that sauce-install made, so remove it by hand"
-    )]
-    Occupied(PathBuf),
     #[error("sauce.secrets.\"{0}\" has no .sauce.yaml file, so run `sauce generate` first")]
     NoFile(String),
     #[error("cannot open the .sauce.yaml file of sauce.secrets.\"{name}\": {source}")]
@@ -215,6 +211,10 @@ pub fn run(config_path: &Path) -> Result<(), Error> {
         path: config_path.to_owned(),
         source,
     })?;
+    let generations = Generations::new(&config.link, &config.mount_point);
+    let _lock = generations.lock()?;
+    // Before anything that can fail, so a run that fails still removes what a stopped run left.
+    generations.clean()?;
     let identities = config.identities()?;
     let values = config
         .secrets
@@ -255,24 +255,29 @@ pub fn run(config_path: &Path) -> Result<(), Error> {
             ref path,
             ref source,
             ..
-        } if source.kind() == io::ErrorKind::StorageFull
+        }
+        | Error::Generation(GenerationError::Io {
+            ref path,
+            ref source,
+            ..
+        }) if source.kind() == io::ErrorKind::StorageFull
             && path.starts_with(&config.mount_point) =>
         {
             Error::Full(config.mount_point.clone())
         }
         error => error,
     };
-    let generation = new_generation(&config.link, &config.mount_point).map_err(full)?;
-    let units = match switch(&config, &generation, &outputs) {
-        Ok(units) => units,
+    let next = generations.stage().map_err(|error| full(error.into()))?;
+    let (units, served) = match switch(&config, &generations, &next, &outputs) {
+        Ok(switched) => switched,
         Err(error) => {
-            // The link still points at the current generation, so the staged one is only a copy of values that nothing uses.
-            drop(fs::remove_dir_all(&generation));
+            generations.discard();
             return Err(full(error));
         }
     };
-    // A former owner of a removed or changed file can open it through its old generation until the prune, so the prune comes before anything that can fail.
-    prune(&config.mount_point, &generation)?;
+    // After the exchange, staging holds the old generation, which a former owner of a removed or changed file can open until it is retired, so that comes before the restarts.
+    // A run that stops before it leaves the old generation to `clean` of the next run.
+    generations.retire(&served)?;
     let pending = config.mount_point.join("pending");
     systemctl("try-restart", &units.restart)?;
     systemctl("try-reload-or-restart", &units.reload)?;
@@ -358,30 +363,6 @@ fn io_error(action: &'static str, path: impl AsRef<Path>) -> impl FnOnce(io::Err
     }
 }
 
-fn new_generation(link: &Path, mount_point: &Path) -> Result<PathBuf, Error> {
-    // Only a link into `mount_point` is one that sauce-install made, and anything else at `link` stays as it is.
-    let current = match fs::symlink_metadata(link) {
-        Ok(meta) if meta.is_symlink() => fs::read_link(link)
-            .map_err(io_error("cannot read", link))?
-            .strip_prefix(mount_point)
-            .ok()
-            .and_then(|name| name.to_str()?.parse::<u64>().ok())
-            .ok_or_else(|| Error::Occupied(link.to_owned()))?,
-        Ok(_) => return Err(Error::Occupied(link.to_owned())),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => 0,
-        Err(error) => return Err(io_error("cannot read", link)(error)),
-    };
-    let generation = mount_point.join((current + 1).to_string());
-    if generation.exists() {
-        fs::remove_dir_all(&generation).map_err(io_error("cannot remove", &generation))?;
-    }
-    DirBuilder::new()
-        .mode(0o751)
-        .create(&generation)
-        .map_err(io_error("cannot create", &generation))?;
-    Ok(generation)
-}
-
 /// The value of a secret, from the first identity that is a reader of its file.
 fn open(secret: &Secret, identities: &[x25519::Identity]) -> Result<Zeroizing<Vec<u8>>, Error> {
     let name = &secret.delivery.name;
@@ -456,22 +437,6 @@ fn output<'a>(
     })
 }
 
-/// Removes every generation but the new one.
-fn prune(mount_point: &Path, generation: &Path) -> Result<(), Error> {
-    let entries = fs::read_dir(mount_point).map_err(io_error("cannot read", mount_point))?;
-    for entry in entries {
-        let path = entry.map_err(io_error("cannot read", mount_point))?.path();
-        let numbered = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name.parse::<u64>().is_ok());
-        if numbered && path != generation {
-            fs::remove_dir_all(&path).map_err(io_error("cannot remove", &path))?;
-        }
-    }
-    Ok(())
-}
-
 /// Puts each value in place of its placeholder, in one pass over `content`.
 /// A value goes in as it is and is never searched again, so a value that holds a placeholder cannot pull in another secret.
 fn render(content: &str, secrets: &[Secret], values: &[Zeroizing<Vec<u8>>]) -> Zeroizing<Vec<u8>> {
@@ -494,31 +459,20 @@ fn render(content: &str, secrets: &[Secret], values: &[Zeroizing<Vec<u8>>]) -> Z
     rendered
 }
 
-/// Replaces `link` in one step, so a reader never sees it missing.
-fn replace_symlink(target: &Path, link: &Path) -> io::Result<()> {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |time| time.as_nanos());
-    let mut temporary = link.as_os_str().to_owned();
-    temporary.push(format!(".new-{}-{nanos}", std::process::id()));
-    let temporary = PathBuf::from(temporary);
-    symlink(target, &temporary)?;
-    let renamed = fs::rename(&temporary, link);
-    if renamed.is_err() {
-        drop(fs::remove_file(&temporary));
-    }
-    renamed
-}
-
-/// Writes the new generation, records its units in `pending`, and points `link` at it.
-/// An error leaves `link` on the current generation.
-fn switch(config: &Config, generation: &Path, outputs: &[Output]) -> Result<Units, Error> {
-    write_all(generation, outputs)?;
+/// Writes the new generation, records its units in `pending`, and publishes it, which gives the path of the served generation.
+/// An error before the publication leaves the link on the current generation.
+fn switch(
+    config: &Config,
+    generations: &Generations,
+    next: &Path,
+    outputs: &[Output],
+) -> Result<(Units, PathBuf), Error> {
+    write_all(next, outputs)?;
     // Before systemd runs, at boot, no unit has started yet, so there is nothing to restart.
     let booted = Path::new("/run/systemd/system").exists();
     let pending = config.mount_point.join("pending");
     let units = if booted {
-        changes(&config.link, outputs, &pending)?
+        changes(generations.link(), outputs, &pending)?
     } else {
         Units::default()
     };
@@ -526,8 +480,8 @@ fn switch(config: &Config, generation: &Path, outputs: &[Output]) -> Result<Unit
     units
         .save(&pending)
         .map_err(io_error("cannot write", &pending))?;
-    replace_symlink(generation, &config.link).map_err(io_error("cannot point", &config.link))?;
-    Ok(units)
+    let served = generations.publish(next)?;
+    Ok((units, served))
 }
 
 fn systemctl(verb: &'static str, units: &[String]) -> Result<(), Error> {
@@ -549,16 +503,22 @@ fn systemctl(verb: &'static str, units: &[String]) -> Result<(), Error> {
     }
 }
 
+/// Each folder gets its mode after `mkdir`, so a umask such as `0077` does not close it to the owners of its files.
 fn write_all(generation: &Path, outputs: &[Output]) -> Result<(), Error> {
     for output in outputs {
-        let path = generation.join(&output.relative);
-        if let Some(parent) = path.parent() {
-            DirBuilder::new()
-                .recursive(true)
-                .mode(0o751)
-                .create(parent)
-                .map_err(io_error("cannot create", parent))?;
+        let mut folder = generation.to_path_buf();
+        if let Some(parent) = output.relative.parent() {
+            for name in parent.components() {
+                folder.push(name);
+                match DirBuilder::new().mode(0o700).create(&folder) {
+                    Ok(()) => fs::set_permissions(&folder, Permissions::from_mode(0o751))
+                        .map_err(io_error("cannot set the mode of", &folder))?,
+                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                    Err(error) => return Err(io_error("cannot create", &folder)(error)),
+                }
+            }
         }
+        let path = generation.join(&output.relative);
         write_file(&path, output).map_err(io_error("cannot write", &path))?;
     }
     Ok(())

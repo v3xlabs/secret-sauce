@@ -114,12 +114,20 @@ fn install(dir: &Path, identity: &Path, secrets: &[(&str, &Path)], content: &str
     });
     let path = dir.join("config.json");
     fs::write(&path, config.to_string()).expect("a writable test folder");
-    let mut child = Command::new(env!("CARGO_BIN_EXE_sauce-install"))
-        .arg(&path)
+    run(&path, None)
+}
+
+/// Runs `sauce-install` with `config`, and with `SAUCE_LOCK_FD` set to `lock_fd` when there is one, as the NixOS module sets it.
+fn run(config: &Path, lock_fd: Option<&str>) -> Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_sauce-install"));
+    command
+        .arg(config)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("sauce-install runs");
+        .stderr(Stdio::piped());
+    if let Some(fd) = lock_fd {
+        command.env("SAUCE_LOCK_FD", fd);
+    }
+    let mut child = command.spawn().expect("sauce-install runs");
     let start = Instant::now();
     let ended = |child: &mut Child| {
         child
@@ -137,6 +145,49 @@ fn install(dir: &Path, identity: &Path, secrets: &[(&str, &Path)], content: &str
     let output = child.wait_with_output().expect("sauce-install ends");
     assert!(!stuck, "sauce-install ran past {DEADLINE:?}");
     output
+}
+
+#[test]
+fn a_lock_descriptor_that_is_not_the_lock_is_refused() {
+    let dir = test_folder("lock-descriptor");
+    let file = seal(&dir, "notes", NAME, "first value");
+    let installed = install(
+        &dir,
+        &identity(&dir, 0o600),
+        &[(NAME, &file)],
+        &format!("{}\n", placeholder(NAME)),
+    );
+    assert!(installed.status.success(), "{installed:?}");
+
+    // A negative number, a descriptor that is not open, and standard input, which is open but not the lock.
+    for fd in ["-1", "999", "0", "lock"] {
+        let refused = run(&dir.join("config.json"), Some(fd));
+        assert!(!refused.status.success(), "{fd}");
+        let error = String::from_utf8(refused.stderr).unwrap();
+        assert!(error.contains("SAUCE_LOCK_FD"), "{error}");
+    }
+}
+
+#[test]
+fn a_generation_has_its_modes_under_a_umask_that_closes_new_folders() {
+    let dir = test_folder("umask");
+    let file = seal(&dir, "notes", NAME, "first value");
+    let content = format!("{}\n", placeholder(NAME));
+    let installed = install(&dir, &identity(&dir, 0o600), &[(NAME, &file)], &content);
+    assert!(installed.status.success(), "{installed:?}");
+
+    // The second run makes its generation under umask 0077, in a shell, so the umask of the other tests stays as it is.
+    let installed = Command::new("sh")
+        .args(["-c", "umask 077 && exec \"$0\" \"$1\""])
+        .arg(env!("CARGO_BIN_EXE_sauce-install"))
+        .arg(dir.join("config.json"))
+        .output()
+        .expect("sauce-install runs");
+    assert!(installed.status.success(), "{installed:?}");
+    for folder in ["sauce", "sauce/rendered"] {
+        let mode = fs::metadata(dir.join(folder)).unwrap().mode() & 0o7777;
+        assert_eq!(mode, 0o751, "{folder}");
+    }
 }
 
 fn test_folder(name: &str) -> PathBuf {
@@ -162,6 +213,21 @@ fn installs_a_secret_and_a_template_and_keeps_them_when_a_file_does_not_open() {
         "PASSWORD=first value\n"
     );
 
+    // A second run puts its generation in place of the first in one exchange, and leaves no other behind.
+    let file = seal(&dir, "notes", NAME, "second value");
+    let installed = install(&dir, &identity(&dir, 0o600), &[(NAME, &file)], &content);
+    assert!(installed.status.success(), "{installed:?}");
+    assert_eq!(fs::read_to_string(&secret).unwrap(), "second value");
+    assert_eq!(
+        fs::read_link(dir.join("sauce")).unwrap(),
+        dir.join("sauce.d/active")
+    );
+    let left: Vec<_> = fs::read_dir(dir.join("sauce.d"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert_eq!(left, ["active"]);
+
     let file = seal(&dir, "backup", NAME, "value for another key");
     let refused = install(&dir, &identity(&dir, 0o600), &[(NAME, &file)], &content);
     assert!(!refused.status.success());
@@ -171,7 +237,7 @@ fn installs_a_secret_and_a_template_and_keeps_them_when_a_file_does_not_open() {
         "{error}"
     );
     assert!(!error.contains("value for another key"), "{error}");
-    assert_eq!(fs::read_to_string(&secret).unwrap(), "first value");
+    assert_eq!(fs::read_to_string(&secret).unwrap(), "second value");
 }
 
 #[test]

@@ -174,13 +174,24 @@ pkgs.testers.runNixOSTest {
       };
     };
 
+    # userborn makes the users at boot, so the owner of a file exists only after it ran.
+    services.userborn.enable = true;
+    users.users.hostapp = {
+      isSystemUser = true;
+      group = "hostapp";
+    };
+    users.groups.hostapp = { };
+
     sauce = {
       age.sshKeyPaths = [
         "/etc/ssh/ssh_host_rsa_key"
         "/etc/ssh/other_ed25519_key"
         "/etc/ssh/ssh_host_ed25519_key"
       ];
-      secrets = lib.mapAttrs (name: _: { file = "${hostFiles}/${name}.sauce.yaml"; }) hostValues;
+      secrets = lib.mapAttrs (name: _: {
+        file = "${hostFiles}/${name}.sauce.yaml";
+        owner = "hostapp";
+      }) hostValues;
     };
   };
 
@@ -219,6 +230,25 @@ pkgs.testers.runNixOSTest {
 
       def read(path):
           return notes.succeed(f"cat {path}")
+
+      def read_as(user, path):
+          return notes.succeed(f"su -s /bin/sh {user} -c 'cat {path}'")
+
+      def unit_command(toplevel):
+          """The command of sauce-install in the unit of `toplevel`, with its JSON."""
+          script = notes.succeed(f"grep -o '/nix/store/[^ ]*/bin/sauce-install-start' {toplevel}/etc/systemd/system/sauce-install.service").strip()
+          return notes.succeed(f"grep -o '/nix/store/[^ ]*/bin/sauce-install /nix/store/[^ ]*sauce-install.json' {script}").strip()
+
+      def hold_lock(mark):
+          """Takes /run/sauce.lock in another process, which creates /tmp/{mark}.held once it holds it and lets go when /tmp/{mark}.release exists."""
+          notes.execute(f"flock /run/sauce.lock sh -c 'touch /tmp/{mark}.held; while [ ! -e /tmp/{mark}.release ]; do sleep 0.1; done' > /dev/null 2>&1 &")
+          notes.wait_until_succeeds(f"test -e /tmp/{mark}.held")
+
+      def lock_waiter():
+          """The name of the process that waits for /run/sauce.lock, once one does."""
+          inode = notes.succeed("stat -c %i /run/sauce.lock").strip()
+          line = notes.wait_until_succeeds(f"grep -m 1 -E -- '-> FLOCK +ADVISORY +WRITE +[0-9]+ +[0-9a-f]+:[0-9a-f]+:{inode} ' /proc/locks", timeout=60)
+          return notes.succeed(f"cat /proc/{line.split()[5]}/comm").strip()
 
       notes.wait_for_unit("sauce-install.service")
 
@@ -307,6 +337,138 @@ pkgs.testers.runNixOSTest {
           notes.fail(f"journalctl -t systemd-coredump --no-pager | grep -F 'Process {pid} '")
           notes.fail("coredumpctl --no-pager list sauce-install")
 
+      with subtest("a reused tmpfs without its options, mode or owner stops the install"):
+          notes.succeed("${system}/bin/switch-to-configuration test")
+          # Each subtest here starts the unit several times within seconds, past the start limit of systemd.
+          notes.succeed("systemctl reset-failed sauce-install.service")
+          notes.succeed("mount -o remount,exec /run/sauce.d")
+          notes.fail("systemctl restart sauce-install.service")
+          notes.wait_until_succeeds("journalctl --sync && journalctl -u sauce-install.service | grep -F '/run/sauce.d is a tmpfs without noexec'", timeout=60)
+          notes.succeed("mount -o remount,noexec /run/sauce.d")
+          notes.succeed("chmod 755 /run/sauce.d")
+          notes.fail("systemctl restart sauce-install.service")
+          notes.wait_until_succeeds("journalctl --sync && journalctl -u sauce-install.service | grep -F '/run/sauce.d has the mode, uid and gid 755 0 0'", timeout=60)
+          notes.succeed("chmod 751 /run/sauce.d")
+          notes.succeed("systemctl reset-failed sauce-install.service")
+          notes.succeed("systemctl restart sauce-install.service")
+          notes.succeed("setfacl -d -m u:postgres:r /run/sauce.d")
+          notes.fail("systemctl restart sauce-install.service")
+          notes.wait_until_succeeds("journalctl --sync && journalctl -u sauce-install.service | grep -F '/run/sauce.d has an ACL'", timeout=60)
+          notes.succeed("setfacl -b /run/sauce.d")
+          notes.succeed("systemctl reset-failed sauce-install.service")
+          notes.succeed("systemctl restart sauce-install.service")
+
+      with subtest("a value is closed to its owner until its publication, and a stopped run leaves nothing that the next run keeps"):
+          value = "${values."hedgedoc/db-password"}"
+          # What a stopped run, or an earlier version, leaves: a generation and a new link to it.
+          notes.succeed("mkdir -m 700 /run/sauce.d/999 && ln -s /run/sauce.d/999 /run/sauce.new")
+          # sauce-install compares the files that it wrote with the served ones before it publishes, so a FIFO in place of a served file holds a run there.
+          fifo = "/run/sauce/sso/hedgedoc"
+          notes.succeed(f"rm {fifo} && mkfifo -m 600 {fifo}")
+          notes.succeed("systemctl reset-failed sauce-install.service")
+          notes.succeed("systemctl restart --no-block sauce-install.service")
+          staged = "/run/sauce.d/staging/next/hedgedoc/db-password"
+          # A file gets its owner after its value, so this owner means the staged file is complete.
+          notes.wait_until_succeeds(f"test \"$(stat -c %U {staged})\" = postgres")
+          assert read_as("postgres", "/run/sauce/hedgedoc/db-password") == value
+          notes.fail(f"su -s /bin/sh postgres -c 'cat {staged}'")
+          notes.fail("test -e /run/sauce.d/999")
+          notes.fail("test -L /run/sauce.new")
+          notes.succeed("systemctl kill -s KILL sauce-install.service")
+          notes.wait_until_succeeds("systemctl is-failed sauce-install.service")
+          assert read_as("postgres", "/run/sauce/hedgedoc/db-password") == value
+          notes.succeed(f"rm {fifo} && echo stale > {fifo}")
+          notes.succeed("ln -s /run/sauce.d/staging/next /run/sauce.new")
+          notes.succeed("systemctl reset-failed sauce-install.service")
+          notes.succeed("systemctl restart sauce-install.service")
+          assert read("/run/sauce/sso/hedgedoc") == "${values."sso/hedgedoc"}"
+          assert notes.succeed("ls -A /run/sauce.d").split() == ["active"]
+          notes.fail("test -L /run/sauce.new")
+
+      with subtest("a run that fails keeps the values readable and still removes what a stopped run left"):
+          notes.succeed("mkdir -m 700 /run/sauce.d/998 && ln -s /run/sauce.d/998 /run/sauce.new")
+          notes.succeed("chmod 644 /etc/sauce/notes.key")
+          notes.succeed("systemctl reset-failed sauce-install.service")
+          notes.fail("systemctl restart sauce-install.service")
+          notes.wait_until_succeeds("journalctl --sync && journalctl -u sauce-install.service | grep -F '/etc/sauce/notes.key is not a regular file'", timeout=60)
+          assert read_as("postgres", "/run/sauce/hedgedoc/db-password") == "${values."hedgedoc/db-password"}"
+          notes.fail("test -e /run/sauce.d/998")
+          notes.fail("test -L /run/sauce.new")
+          notes.succeed("chmod 400 /etc/sauce/notes.key")
+
+      with subtest("the owner of a value reads it at every moment of a publication"):
+          notes.execute("su -s /bin/sh postgres -c 'while [ ! -e /tmp/stop-reading ]; do if cat /run/sauce/hedgedoc/db-password > /dev/null 2>&1; then echo read; else echo failed; fi; done' > /tmp/reads 2>&1 &")
+          notes.wait_until_succeeds("grep -q read /tmp/reads")
+          for _ in range(10):
+              notes.succeed("systemctl reset-failed sauce-install.service && systemctl restart sauce-install.service")
+          notes.succeed("touch /tmp/stop-reading")
+          notes.wait_until_fails("pgrep -u postgres -x sh")
+          reads = notes.succeed("cat /tmp/reads").split()
+          assert "failed" not in reads, f"{reads.count('failed')} of {len(reads)} reads failed"
+
+      with subtest("a run on the link of an earlier version serves its new generation in one exchange, so the owner reads a value at every moment, also after a stopped run and a failed one"):
+          value = "${values."hedgedoc/db-password"}"
+          # The link of an earlier version points at a numbered generation.
+          notes.succeed("cp -a /run/sauce.d/active /run/sauce.d/7 && ln -sfn /run/sauce.d/7 /run/sauce")
+          fifo = "/run/sauce.d/7/sso/hedgedoc"
+          notes.succeed(f"rm {fifo} && mkfifo -m 600 {fifo}")
+          notes.succeed("systemctl reset-failed sauce-install.service")
+          notes.succeed("systemctl restart --no-block sauce-install.service")
+          notes.wait_until_succeeds("test \"$(stat -c %U /run/sauce.d/staging/next/hedgedoc/db-password)\" = postgres")
+          notes.fail("test -e /run/sauce.d/active")
+          notes.succeed("systemctl kill -s KILL sauce-install.service")
+          notes.wait_until_succeeds("systemctl is-failed sauce-install.service")
+          assert read_as("postgres", "/run/sauce/hedgedoc/db-password") == value
+          notes.succeed(f"rm {fifo} && echo stale > {fifo}")
+          notes.succeed("chmod 644 /etc/sauce/notes.key")
+          notes.succeed("systemctl reset-failed sauce-install.service")
+          notes.fail("systemctl restart sauce-install.service")
+          assert read_as("postgres", "/run/sauce/hedgedoc/db-password") == value
+          notes.succeed("chmod 400 /etc/sauce/notes.key")
+          notes.execute("su -s /bin/sh postgres -c 'while [ ! -e /tmp/stop-migration-reads ]; do if cat /run/sauce/hedgedoc/db-password > /dev/null 2>&1; then echo read; else echo failed; fi; done' > /tmp/migration-reads 2>&1 &")
+          notes.wait_until_succeeds("grep -q read /tmp/migration-reads")
+          notes.succeed("systemctl reset-failed sauce-install.service && systemctl restart sauce-install.service")
+          notes.succeed("touch /tmp/stop-migration-reads")
+          notes.wait_until_fails("pgrep -u postgres -x sh")
+          reads = notes.succeed("cat /tmp/migration-reads").split()
+          assert "failed" not in reads, f"{reads.count('failed')} of {len(reads)} reads failed"
+          assert notes.succeed("readlink /run/sauce").strip() == "/run/sauce.d/7"
+          assert notes.succeed("ls -A /run/sauce.d").split() == ["7"]
+          assert notes.succeed("stat -c %a /run/sauce.d/7").strip() == "751"
+          assert read("/run/sauce/sso/hedgedoc") == "${values."sso/hedgedoc"}"
+          assert read_as("postgres", "/run/sauce/hedgedoc/db-password") == value
+
+      with subtest("an activation waits for a run that holds the lock of root outside the mount, and then publishes"):
+          assert notes.succeed("stat -c '%a %u' /run/sauce.lock").strip() == "600 0"
+          notes.fail("test -e /run/sauce.d/lock")
+          notes.succeed("systemctl reset-failed sauce-install.service")
+          hold_lock("unit")
+          notes.execute("(${system}/specialisation/changed/bin/switch-to-configuration test > /tmp/switch.log 2>&1; echo $? > /tmp/switch.status) > /dev/null 2>&1 &")
+          notes.wait_until_succeeds("test \"$(systemctl show -P ActiveState sauce-install.service)\" = activating")
+          # The script of the unit waits in `flock 9` before it starts sauce-install.
+          assert lock_waiter() == "flock"
+          notes.fail("test -e /tmp/switch.status")
+          assert read("/run/sauce/sso/hedgedoc") == "${values."sso/hedgedoc"}"
+          notes.succeed("touch /tmp/unit.release")
+          notes.wait_until_succeeds("test -e /tmp/switch.status", timeout=120)
+          assert read("/run/sauce/sso/hedgedoc") == "${changedValue}"
+          notes.succeed("${system}/bin/switch-to-configuration test")
+          assert read("/run/sauce/sso/hedgedoc") == "${values."sso/hedgedoc"}"
+
+      with subtest("sauce-install run by hand waits for the lock itself, and then publishes"):
+          command = unit_command("${system}/specialisation/changed")
+          hold_lock("by-hand")
+          notes.execute(f"({command} > /tmp/by-hand.log 2>&1; echo $? > /tmp/by-hand.status) > /dev/null 2>&1 &")
+          assert lock_waiter() == "sauce-install"
+          notes.fail("test -e /tmp/by-hand.status")
+          assert read("/run/sauce/sso/hedgedoc") == "${values."sso/hedgedoc"}"
+          notes.succeed("touch /tmp/by-hand.release")
+          notes.wait_until_succeeds("test -e /tmp/by-hand.status", timeout=60)
+          assert notes.succeed("cat /tmp/by-hand.status").strip() == "0", notes.succeed("cat /tmp/by-hand.log")
+          assert read("/run/sauce/sso/hedgedoc") == "${changedValue}"
+          notes.succeed("systemctl reset-failed sauce-install.service && systemctl restart sauce-install.service")
+          assert read("/run/sauce/sso/hedgedoc") == "${values."sso/hedgedoc"}"
+
       with subtest("a machine with only ssh host keys opens files for the recipient of ssh-to-age and for its ssh-ed25519 line, with the second usable key"):
           host.wait_for_unit("sauce-install.service")
           # The journal can hold back lines of a unit that just ended, so it is written out before any check of it.
@@ -320,5 +482,12 @@ pkgs.testers.runNixOSTest {
           host.succeed("status=0; grep -q -e AGE-SECRET-KEY -e 'PRIVATE KEY' /tmp/journal || status=$?; test $status -eq 1")
           host.succeed("grep -h -v -e ----- /etc/ssh/ssh_host_ed25519_key /etc/ssh/other_ed25519_key /etc/ssh/ssh_host_rsa_key > /tmp/key-lines && test -s /tmp/key-lines")
           host.succeed("status=0; grep -q -F -f /tmp/key-lines /tmp/journal || status=$?; test $status -eq 1")
+
+      with subtest("sauce-install runs after userborn and systemd-sysusers, so an owner that they make exists at boot"):
+          # systemd keeps an After= only for a unit that exists, and this machine runs userborn, so the unit file shows the order on systemd-sysusers.
+          after = host.succeed("systemctl show -P After sauce-install.service").split()
+          assert "userborn.service" in after, after
+          host.succeed("systemctl cat sauce-install.service | grep '^After=' | grep -F systemd-sysusers.service")
+          assert host.succeed("stat -L -c %U /run/sauce/host/for-age").strip() == "hostapp"
     '';
 }

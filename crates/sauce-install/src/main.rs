@@ -1,3 +1,4 @@
+mod generations;
 mod ids;
 mod install;
 mod key;

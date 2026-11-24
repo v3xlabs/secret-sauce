@@ -222,16 +222,23 @@ let
 
   hostKeys = import ./host-keys.nix config.services.openssh;
 
-  withTools = script: ''
+  # Every install and removal of `link` holds `<link>.lock`, a file of root outside the mount, from the first look at the mount to the end, so two of them never overlap.
+  # sauce-install takes the same lock itself, and gets the descriptor of this one in SAUCE_LOCK_FD, so its lock returns at once instead of waiting on this shell.
+  withTools = link: script: ''
     (
       # An activation script runs without errexit, so without this a failed mount goes on to write plaintext onto /run.
       set -e
       PATH=${
         lib.makeBinPath [
+          pkgs.acl
+          pkgs.coreutils
           pkgs.util-linux
           config.systemd.package
         ]
       }:$PATH
+      (umask 077 && : >> ${link}.lock)
+      exec 9< ${link}.lock
+      flock 9
       ${script}
     )
   '';
@@ -277,24 +284,49 @@ let
         }
       );
     in
-    withTools ''
+    withTools link ''
       mkdir -p ${link}.d
       fstype=$(findmnt -n -o FSTYPE --mountpoint ${link}.d || true)
       case "$fstype" in
         "") mount -t tmpfs -o size=16m,noswap,nodev,nosuid,noexec,mode=0751 none ${link}.d ;;
-        tmpfs) ;;
+        tmpfs)
+          # A tmpfs from an earlier run, or from anything else, holds the secrets only with the options of the mount above.
+          options=",$(findmnt -n -o OPTIONS --mountpoint ${link}.d),"
+          for option in noswap nodev nosuid noexec; do
+            case "$options" in
+              *",$option,"*) ;;
+              *) echo "${link}.d is a tmpfs without $option, so run umount --lazy ${link}.d or reboot, and the next activation mounts it with every option" >&2; exit 1 ;;
+            esac
+          done
+          ;;
         ramfs) echo "reboot to move ${link}.d to a tmpfs" >&2; exit 1 ;;
         *) echo "${link}.d is a mount of $fstype, and sauce-install needs a tmpfs there" >&2; exit 1 ;;
       esac
+      # Numeric ids, because the activation for neededForUsers runs before /etc/passwd has root.
+      access=$(stat -c '%a %u %g' ${link}.d)
+      if [ "$access" != "751 0 0" ]; then
+        echo "${link}.d has the mode, uid and gid $access, and sauce-install needs 751 0 0" >&2
+        exit 1
+      fi
+      # A default ACL on the mount gives each new file an entry for another user, which the mode of the file does not take away.
+      # A failed getfacl prints nothing, so its status is tested on its own and stops the run.
+      if ! acl=$(getfacl --absolute-names --skip-base ${link}.d); then
+        echo "cannot read the ACL of ${link}.d, so sauce-install does not use it" >&2
+        exit 1
+      fi
+      if [ -n "$acl" ]; then
+        echo "${link}.d has an ACL, and sauce-install needs one without, so run umount --lazy ${link}.d or reboot" >&2
+        exit 1
+      fi
       # A core dump of sauce-install would hold the values it decrypted; systemd-coredump also stores none at a limit of zero.
       ulimit -c 0
-      ${pkgs.callPackage ./sauce-install.nix { }}/bin/sauce-install ${json}
+      SAUCE_LOCK_FD=9 ${pkgs.callPackage ./sauce-install.nix { }}/bin/sauce-install ${json}
     '';
 
   # A service can still hold an old file open, so a plain umount can fail, and --lazy takes away every path to the old files at once.
   remove =
     link:
-    withTools ''
+    withTools link ''
       if mountpoint -q ${link}.d; then
         case "$(readlink ${link})" in
           ${link}.d/*)
@@ -443,7 +475,12 @@ in
       description = "Install the secrets of sauce";
       wantedBy = [ "sysinit.target" ];
       requiredBy = [ "sysinit-reactivation.target" ];
-      after = [ "local-fs.target" ];
+      # With systemd-sysusers or userborn, the owners of the files exist only after these units, as in sops-nix.
+      after = [
+        "local-fs.target"
+        "systemd-sysusers.service"
+        "userborn.service"
+      ];
       before = [
         "sysinit.target"
         "sysinit-reactivation.target"
