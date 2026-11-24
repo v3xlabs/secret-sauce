@@ -17,6 +17,11 @@ let
       inherit description;
     };
 
+  # A Nix path, a store path or a string with store context each make the store hold the key or keep it as a dependency.
+  keyPath = types.addCheck types.externalPath (
+    path: !builtins.hasContext path && !lib.hasPrefix "${builtins.storeDir}/" path
+  );
+
   textRecipeOptions = {
     encoding = optional types.str "The encoding of the value: `alphanum`, `hex`, `base64`, `base64url` or `digits`.";
     min = optional types.ints.positive "The least number of random characters.";
@@ -215,6 +220,8 @@ let
   forUsers = lib.filterAttrs (_: secret: secret.neededForUsers) cfg.secrets;
   regular = lib.filterAttrs (_: secret: !secret.neededForUsers) cfg.secrets;
 
+  hostKeys = import ./host-keys.nix config.services.openssh;
+
   withTools = script: ''
     (
       # An activation script runs without errexit, so without this a failed mount goes on to write plaintext onto /run.
@@ -253,6 +260,7 @@ let
       json = pkgs.writeText "sauce-install.json" (
         builtins.toJSON {
           inherit (cfg) identityFile;
+          inherit (cfg.age) sshKeyPaths;
           inherit link;
           mountPoint = "${link}.d";
           secrets = lib.mapAttrsToList (
@@ -328,7 +336,7 @@ in
 
     recipient = mkOption {
       type = types.str;
-      description = "The public key of this machine.";
+      description = "The public key of this machine, as an `age1...` recipient or as the `ssh-ed25519 AAAA...` line of its ssh public key, which `sauce` converts to the `age1...` recipient that `ssh-to-age` prints for it.";
     };
 
     adminRecipients = {
@@ -344,9 +352,13 @@ in
       };
     };
 
-    identityFile = mkOption {
-      type = types.str;
-      description = "The path of the private key of this machine, on the machine.";
+    identityFile = optional types.str "The path of the age identity of this machine, on the machine, as `age-keygen` writes it. `sauce-install` opens a file with this key or with a key of `age.sshKeyPaths`.";
+
+    age.sshKeyPaths = mkOption {
+      type = types.listOf keyPath;
+      default = hostKeys.paths;
+      defaultText = lib.literalMD "The ed25519 keys of {option}`services.openssh.hostKeys`, when openssh is enabled";
+      description = "The paths of ssh keys of this machine, on the machine, as in `sops.age.sshKeyPaths` of sops-nix. `sauce-install` converts each ed25519 key to an age identity in memory, so a file for the `age1...` recipient that `ssh-to-age` prints from its public key opens. It skips a key that it cannot read or that is not an ed25519 key, with a warning that names the path. A path is a string outside the Nix store with no store context, as for `identityFile`.";
     };
 
     manifest = mkOption {
@@ -375,6 +387,8 @@ in
         read = lib.attrNames (lib.filterAttrs (name: secret: !defines name secret) cfg.secrets);
       };
     };
+
+    inherit (hostKeys) warnings;
 
     assertions =
       lib.mapAttrsToList (name: secret: {
@@ -418,6 +432,11 @@ in
             || lib.versionAtLeast config.boot.kernelPackages.kernel.version "6.4";
           message = "sauce keeps secrets on a tmpfs with noswap, which needs Linux 6.4 or later, and this machine boots Linux ${config.boot.kernelPackages.kernel.version}. Set boot.kernelPackages to a newer kernel.";
         }
+        {
+          assertion =
+            cfg.secrets == { } && cfg.templates == { } || cfg.identityFile != null || cfg.age.sshKeyPaths != [ ];
+          message = "This machine has no key for sauce-install, because sauce.identityFile is not set and sauce.age.sshKeyPaths is empty. Set one of them, or enable services.openssh, which puts its ed25519 host key in sauce.age.sshKeyPaths.";
+        }
       ];
 
     systemd.services.sauce-install = lib.mkIf (regular != { } || cfg.templates != { }) {
@@ -433,7 +452,9 @@ in
       conflicts = [ "shutdown.target" ];
       unitConfig = {
         DefaultDependencies = false;
-        RequiresMountsFor = [ cfg.identityFile ];
+        RequiresMountsFor = lib.optional (cfg.identityFile != null) cfg.identityFile;
+        # A key of sshKeyPaths that cannot be read is skipped, so its mount must not stop the run.
+        WantsMountsFor = cfg.age.sshKeyPaths;
       };
       serviceConfig = {
         Type = "oneshot";

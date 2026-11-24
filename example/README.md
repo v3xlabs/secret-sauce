@@ -332,7 +332,7 @@ Without that step, `nix build .#nixosConfigurations.backup.config.system.build.t
 
 The last two lines are there because the machines of this example leave out their disks and boot loader.
 
-On the machine, at every activation, `sauce-install` opens each `.sauce.yaml` file of the machine with the key in `sauce.identityFile`.
+On the machine, at every activation, `sauce-install` opens each `.sauce.yaml` file of the machine with the key in `sauce.identityFile` or with a key in `sauce.age.sshKeyPaths`.
 It writes each secret to `/run/sauce/<name>`, and each template to `/run/sauce/rendered/<name>`, on a ramfs, with the owner and mode of the declaration.
 It restarts the units in `restartUnits` of a secret or template whose value changed.
 When one file does not open, the activation fails and the secrets of the last activation stay in place.
@@ -358,4 +358,5 @@ sops reads all of its sources together, and `sauce` reads only the first one tha
 `sauce` skips an empty `SOPS_AGE_KEY` or `SOPS_AGE_KEY_CMD`, and it does not set `SOPS_AGE_RECIPIENT` for the command.
 `sauce` keeps the key in memory, and an error names the source and never the key.
 On each machine, make its key with `age-keygen -o /var/lib/sauce/host.key`, and put the public key that it prints in `sauce.recipient` of that machine.
+A machine that runs openssh can use its ed25519 host key instead, as sops-nix does: `sauce.age.sshKeyPaths` holds it by default, and `sauce.recipient` takes the line of `/etc/ssh/ssh_host_ed25519_key.pub` or the `age1...` that `ssh-to-age` prints for it.
 Then run `sauce generate`, `git add` the secrets, and deploy.

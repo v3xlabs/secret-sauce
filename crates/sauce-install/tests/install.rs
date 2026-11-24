@@ -98,6 +98,7 @@ fn install(dir: &Path, secrets: &[(&str, &Path)], content: &str) -> Output {
         "link": dir.join("sauce"),
         "mountPoint": dir.join("sauce.d"),
         "secrets": secrets,
+        "sshKeyPaths": [],
         "templates": [template],
     });
     let path = dir.join("config.json");

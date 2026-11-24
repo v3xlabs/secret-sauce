@@ -551,6 +551,8 @@ You should never depend on `sauce` alone to get your secrets back.
 
 `sauce` encrypts to age keys, to GPG keys, or to a mix of both.
 Each host has a key of its own, and you have one or more for yourself.
+A host key is an age key, or the ed25519 ssh host key of the machine, as in sops-nix.
+`sauce` turns an `ssh-ed25519` public key into the `age1...` recipient that `ssh-to-age` prints for it, so the `age1...` keys of sops-nix users keep working.
 
 You list your own keys by type: age recipients in `sauce.adminRecipients.age`, and the fingerprints of GPG keys in `sauce.adminRecipients.pgp`.
 A GPG fingerprint is the one of a primary key or of a subkey, so a bare fingerprint from your `.sops.yaml` works as it is.
@@ -587,6 +589,10 @@ At activation, a program called `sauce-install` decrypts the host's secrets with
 That memory is a tmpfs of 16 MiB that never goes to swap, which needs Linux 6.4 or later.
 The Nix store holds only the encrypted files.
 When a host has no secret left, the next activation removes `/run/sauce` and the files in it.
+
+The host's keys are the age key in `sauce.identityFile` and the ssh keys in `sauce.age.sshKeyPaths`, which holds the ed25519 host keys of openssh by default, and any one of them opens a file.
+`sauce-install` turns each ssh key into its age key in memory, as sops-nix does with the code of `ssh-to-age`.
+It skips an ssh key that it cannot read or that is not an ed25519 key, with a warning, because sshd makes its keys only after `sauce-install` runs at the first boot.
 
 If a secret cannot be decrypted, the activation fails.
 A deploy tool that rolls back on failure then rolls back.

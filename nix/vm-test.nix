@@ -28,6 +28,51 @@ let
     sealed machines.notes values;
   changed = "${sealed machines.notes { "sso/hedgedoc" = changedValue; }}/sso/hedgedoc.sauce.yaml";
   wrongKey = "${sealed machines.backup { "sso/hedgedoc" = wrongKeyValue; }}/sso/hedgedoc.sauce.yaml";
+
+  # Throwaway ssh host keys of the machine `host`, which the store holds, so they are for this test only.
+  hostKeys = pkgs.runCommand "sauce-vm-host-keys" { nativeBuildInputs = [ pkgs.openssh ]; } ''
+    mkdir $out
+    ssh-keygen -q -t ed25519 -N "" -C root@host -f $out/ed25519
+    ssh-keygen -q -t ed25519 -N "" -C root@host -f $out/other
+    ssh-keygen -q -t rsa -b 2048 -N "" -C root@host -f $out/rsa
+  '';
+  hostValues = {
+    "host/for-age" = "value-of-host-for-age";
+    "host/for-ssh" = "value-of-host-for-ssh";
+  };
+  hostManifest =
+    name:
+    pkgs.writeText "manifests.json" (
+      builtins.toJSON {
+        host = {
+          inherit (machines.notes.sauce.manifest) adminRecipients;
+          read = [ ];
+          secrets.${name}.file = "${name}.sauce.yaml";
+        };
+      }
+    );
+  # One file for the `age1...` that ssh-to-age prints from the public key, as sops-nix users have it, and one for the `ssh-ed25519` line, which sauce converts.
+  # ssh-to-age reads the public key only.
+  hostFiles =
+    pkgs.runCommand "sauce-files-host"
+      {
+        nativeBuildInputs = [
+          sauce.packages.${pkgs.stdenv.hostPlatform.system}.sauce
+          pkgs.jq
+          pkgs.ssh-to-age
+        ];
+      }
+      ''
+        age=$(ssh-to-age -i ${hostKeys}/ed25519.pub)
+        jq --arg recipient "$age" '.host.recipient = $recipient' ${hostManifest "host/for-age"} > $TMPDIR/for-age.json
+        jq --rawfile recipient ${hostKeys}/ed25519.pub '.host.recipient = $recipient' ${hostManifest "host/for-ssh"} > $TMPDIR/for-ssh.json
+        mkdir $out
+        cd $out
+        printf %s ${hostValues."host/for-age"} | sauce set host/for-age --manifest $TMPDIR/for-age.json
+        printf %s ${hostValues."host/for-ssh"} | sauce set host/for-ssh --manifest $TMPDIR/for-ssh.json
+        grep -Fx "    age: $age" host/for-age.sauce.yaml
+        grep -Fx "    age: $age" host/for-ssh.sauce.yaml
+      '';
 in
 pkgs.testers.runNixOSTest {
   name = "sauce-install";
@@ -89,10 +134,44 @@ pkgs.testers.runNixOSTest {
 
       virtualisation.cores = 2;
 
+      # So that sauce.age.sshKeyPaths takes its default, the ed25519 host key, next to identityFile.
+      services.openssh.enable = true;
+
       specialisation.changed.configuration.sauce.secrets."sso/hedgedoc".file = lib.mkForce changed;
       specialisation.wrong-key.configuration.sauce.secrets."sso/hedgedoc".file = lib.mkForce wrongKey;
       specialisation.for-users.configuration.sauce.secrets."ddclient/api-token".neededForUsers = true;
     };
+
+  nodes.host = {
+    imports = [ sauce.nixosModules.default ];
+
+    services.openssh.enable = true;
+    # The host keys are there before the first boot, as on a machine where sshd ran before, and sshd keeps a key that is there.
+    environment.etc = {
+      "ssh/ssh_host_ed25519_key" = {
+        source = "${hostKeys}/ed25519";
+        mode = "0600";
+      };
+      "ssh/ssh_host_rsa_key" = {
+        source = "${hostKeys}/rsa";
+        mode = "0600";
+      };
+      # A usable ed25519 key that is a reader of no file, so the files open only if sauce-install goes on to the next key.
+      "ssh/other_ed25519_key" = {
+        source = "${hostKeys}/other";
+        mode = "0600";
+      };
+    };
+
+    sauce = {
+      age.sshKeyPaths = [
+        "/etc/ssh/ssh_host_rsa_key"
+        "/etc/ssh/other_ed25519_key"
+        "/etc/ssh/ssh_host_ed25519_key"
+      ];
+      secrets = lib.mapAttrs (name: _: { file = "${hostFiles}/${name}.sauce.yaml"; }) hostValues;
+    };
+  };
 
   testScript =
     { nodes, ... }:
@@ -211,5 +290,19 @@ pkgs.testers.runNixOSTest {
           notes.wait_until_succeeds(f"journalctl -t systemd-coredump --no-pager | grep -F 'Process {marker} (sleep)'")
           notes.fail(f"journalctl -t systemd-coredump --no-pager | grep -F 'Process {pid} '")
           notes.fail("coredumpctl --no-pager list sauce-install")
+
+      with subtest("a machine with only ssh host keys opens files for the recipient of ssh-to-age and for its ssh-ed25519 line, with the second usable key"):
+          host.wait_for_unit("sauce-install.service")
+          # The journal can hold back lines of a unit that just ended, so it is written out before any check of it.
+          host.succeed("journalctl --sync")
+          assert host.succeed("cat /run/sauce/host/for-age") == "${hostValues."host/for-age"}"
+          assert host.succeed("cat /run/sauce/host/for-ssh") == "${hostValues."host/for-ssh"}"
+          host.succeed("journalctl -u sauce-install.service | grep -F 'cannot use /etc/ssh/ssh_host_rsa_key, because it is a key of type ssh-rsa'")
+          # grep exits 1 for no match and 2 for an error, so only 1 passes, and -q keeps the key lines out of the log of the test.
+          # The shell of the test stops at the first failing command, so the status is kept before the test of it.
+          host.succeed("journalctl -b -o cat > /tmp/journal && test -s /tmp/journal")
+          host.succeed("status=0; grep -q -e AGE-SECRET-KEY -e 'PRIVATE KEY' /tmp/journal || status=$?; test $status -eq 1")
+          host.succeed("grep -h -v -e ----- /etc/ssh/ssh_host_ed25519_key /etc/ssh/other_ed25519_key /etc/ssh/ssh_host_rsa_key > /tmp/key-lines && test -s /tmp/key-lines")
+          host.succeed("status=0; grep -q -F -f /tmp/key-lines /tmp/journal || status=$?; test $status -eq 1")
     '';
 }

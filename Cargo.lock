@@ -456,6 +456,7 @@ dependencies = [
  "ed25519",
  "sha2 0.10.9",
  "subtle",
+ "zeroize",
 ]
 
 [[package]]
@@ -1271,10 +1272,12 @@ dependencies = [
  "age",
  "age-core",
  "base64",
+ "bech32",
  "chacha20poly1305",
  "clap",
  "clap_complete",
  "dialoguer",
+ "ed25519-dalek",
  "hkdf",
  "rand",
  "rpassword",

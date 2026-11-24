@@ -99,6 +99,12 @@ pub enum RuleError {
         "{0}: sauce.adminRecipients.age and sauce.adminRecipients.pgp are both empty, and every secret needs the key of an admin"
     )]
     NoAdmin(String),
+    #[error("{machine} has a sauce.recipient that sauce cannot use, because {source}")]
+    Recipient {
+        machine: String,
+        #[source]
+        source: sauce::ssh::KeyError,
+    },
 }
 
 /// A folder on the way to the file of a secret, which a write of that file must not go through.
@@ -204,6 +210,21 @@ impl AdminRecipients {
             .iter()
             .map(move |key| ("pgp", admin(Key::Pgp(key.clone()))));
         age.chain(pgp)
+    }
+}
+
+impl Manifest {
+    /// The recipient of the machine as `age1...`, which is the recipient that `ssh-to-age` makes for an `ssh-ed25519` key.
+    fn age_recipient(&self, machine: &str) -> Result<String, RuleError> {
+        if self.recipient.starts_with("age1") {
+            return Ok(self.recipient.clone());
+        }
+        sauce::ssh::recipient(&self.recipient)
+            .map(|recipient| recipient.to_string())
+            .map_err(|source| RuleError::Recipient {
+                machine: machine.to_owned(),
+                source,
+            })
     }
 }
 
@@ -421,6 +442,8 @@ impl Machines {
 
     fn join_secrets(&self, partial: bool) -> Result<BTreeMap<Name, Secret<'_>>, RuleError> {
         let mut secrets = BTreeMap::new();
+        // A machine that reads no secret is never a reader, so its recipient is not converted and cannot fail.
+        let mut recipients: BTreeMap<&str, String> = BTreeMap::new();
         for (machine, manifest) in &self.0 {
             let admins = &manifest.admin_recipients;
             if admins.age.is_empty() && admins.pgp.is_empty() {
@@ -503,9 +526,13 @@ impl Machines {
                 }
             }
             for machine in &secret.machines {
+                let recipient = match recipients.entry(machine) {
+                    Entry::Occupied(entry) => entry.into_mut(),
+                    Entry::Vacant(entry) => entry.insert(self.0[*machine].age_recipient(machine)?),
+                };
                 secret.readers.push(Reader {
                     r#for: (*machine).to_owned(),
-                    key: Key::Age(self.0[*machine].recipient.clone()),
+                    key: Key::Age(recipient.clone()),
                 });
             }
         }

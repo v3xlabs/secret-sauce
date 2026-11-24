@@ -280,6 +280,52 @@
                 ];
               message = "A secret with no file and no sauce.defaultDir, and a template name that sauce-install refuses, each have a failed assertion.";
             }
+            {
+              ok =
+                let
+                  failed =
+                    modules:
+                    map (check: check.message) (
+                      lib.filter (check: !check.assertion)
+                        (exampleFlake.nixosConfigurations.backup.extendModules { inherit modules; }).config.assertions
+                    );
+                  noKey = lib.any (lib.hasPrefix "This machine has no key for sauce-install");
+                  # The ssh key paths of notes, or null when the evaluation fails.
+                  sshKeyPaths =
+                    modules:
+                    let
+                      paths = (exampleFlake.nixosConfigurations.notes.extendModules { inherit modules; }).config.sauce.age.sshKeyPaths;
+                      result = builtins.tryEval (builtins.deepSeq paths paths);
+                    in
+                    if result.success then result.value else null;
+                  # A path outside the store that carries the store context of a derivation.
+                  withContext = "${builtins.substring 0 0 "${pkgs.emptyFile}"}/etc/ssh/ssh_host_ed25519_key";
+                in
+                example.notes.sauce.age.sshKeyPaths == [ "/etc/ssh/ssh_host_ed25519_key" ]
+                && example.backup.sauce.age.sshKeyPaths == [ ]
+                && noKey (failed [ { sauce.identityFile = lib.mkForce null; } ])
+                && !noKey (failed [
+                  {
+                    sauce.identityFile = lib.mkForce null;
+                    sauce.age.sshKeyPaths = [ "/etc/ssh/ssh_host_ed25519_key" ];
+                  }
+                ])
+                && sshKeyPaths [ { services.openssh.hostKeys = [ { path = "/etc/ssh/host-key"; } ]; } ] == [ ]
+                && sshKeyPaths [
+                  {
+                    services.openssh.hostKeys = map (path: { type = "ed25519"; inherit path; }) [
+                      "/run/sauce/host-key"
+                      "/run/sauce-for-users.d/1/host-key"
+                      "/run/sauce-keys/host-key"
+                    ];
+                  }
+                ] == [ "/run/sauce-keys/host-key" ]
+                && sshKeyPaths [ { sauce.age.sshKeyPaths = lib.mkForce [ "${pkgs.emptyFile}" ]; } ] == null
+                && sshKeyPaths [ { sauce.age.sshKeyPaths = lib.mkForce [ (builtins.unsafeDiscardStringContext "${pkgs.emptyFile}") ]; } ] == null
+                && sshKeyPaths [ { sauce.age.sshKeyPaths = lib.mkForce [ ./flake.nix ]; } ] == null
+                && sshKeyPaths [ { sauce.age.sshKeyPaths = lib.mkForce [ withContext ]; } ] == null;
+              message = "sauce.age.sshKeyPaths holds the ed25519 host key of a machine with openssh, skips a host key with no type and one under a directory of sauce, and is empty on a machine without openssh. A store path, a Nix path or a string with store context there fails the evaluation, and a machine with secrets and neither sauce.identityFile nor a path in sauce.age.sshKeyPaths has a failed assertion.";
+            }
           ];
           failed = lib.filter (fact: !fact.ok) facts;
         in
@@ -322,6 +368,41 @@
             else
               "echo ${lib.escapeShellArg (lib.concatMapStringsSep "\n" (fact: fact.message) failed)} >&2; exit 1"
           );
+          # The default of sauce.age.sshKeyPaths, evaluated against a store of its own, leaves out a host key given as a Nix path without copying it there.
+          # `nix/host-keys.nix` uses builtins only, so it evaluates here with nothing else in that store.
+          # The last evaluation reads the Nix path as a string and shows that the same store does get a copy then.
+          # A key pasted where its path belongs, here two lines of a public marker, never shows in the warnings, which name the entry by its position.
+          host-keys = pkgs.runCommand "sauce-host-keys" { nativeBuildInputs = [ pkgs.jq pkgs.nix ]; } ''
+            export HOME="$TMPDIR" NIX_REMOTE="local?root=$TMPDIR/store"
+            mkdir keys
+            echo throwaway > keys/ssh_host_ed25519_key
+            key="$PWD/keys/ssh_host_ed25519_key"
+            copies() { find "$TMPDIR/store/nix/store" -maxdepth 1 -name '*-ssh_host_ed25519_key' | wc -l; }
+            nix-instantiate --read-write-mode --eval --strict --json -E "
+              import ${./nix/host-keys.nix} {
+                enable = true;
+                generateHostKeys = false;
+                hostKeys = [
+                  { type = \"ed25519\"; path = $key; }
+                  { type = \"ed25519\"; path = \"/etc/ssh/ssh_host_ed25519_key\"; }
+                  { type = \"rsa\"; path = \"/etc/ssh/ssh_host_rsa_key\"; }
+                  { type = \"ed25519\"; path = \"${builtins.storeDir}/x-ssh_host_ed25519_key\"; }
+                  { type = \"ed25519\"; path = \"etc/ssh/ssh_host_ed25519_key\"; }
+                  { type = \"ed25519\"; path = \"PUBLIC-MARKER-ONE\\nPUBLIC-MARKER-TWO\"; }
+                ];
+              }" > result
+            cat result
+            jq -e '.paths == ["/etc/ssh/ssh_host_ed25519_key"]' result
+            jq -e '[.warnings[] | capture("^services.openssh.hostKeys entry (?<n>[0-9]+) ").n] == ["1", "4", "5", "6"]' result
+            if jq -r '.warnings[]' result | grep -q -e PUBLIC-MARKER -e "$key" -e x-ssh_host_ed25519_key; then
+              echo "a warning prints a refused path" >&2
+              exit 1
+            fi
+            test "$(copies)" -eq 0
+            nix-instantiate --read-write-mode --eval -E "\"\''${$key}\"" > /dev/null
+            test "$(copies)" -eq 1
+            touch $out
+          '';
           list =
             pkgs.runCommand "sauce-list"
               {

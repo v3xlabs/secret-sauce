@@ -46,6 +46,7 @@ generator: 5d1c09e7...
 - `keys` lists the readers.
   Each entry has `for`, which is `admin` or the name of a host, then the public key in `age` or `pgp`, then `wrap`.
   An age `wrap` is the stanzas that the age library returns for that key, one line each.
+  A host whose key is an ed25519 ssh key has in `age` the X25519 recipient that `ssh-to-age` makes from it, so its entry is the same as for an age key.
   `pgp` is the fingerprint of a GPG key, as 40 upper case hex characters, of its primary key or of one of its subkeys, and it is valid only with `for: admin`, because a host reads with its age key.
   A primary fingerprint reads with any encryption key of its certificate, and a subkey fingerprint reads with that subkey alone, so a reader refuses a wrap for another key, and a decryption by another key, before it uses the file key.
   A file has at most one entry for each fingerprint, so gpg gets at most one try for each fingerprint in each file, and a primary fingerprint and a subkey fingerprint of one key are two fingerprints.

@@ -7,6 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use age::x25519;
 use sauce::format::{self, Name, NameError, Opener, ReadError};
+use sauce::ssh::{self, KeyError};
 use serde::Deserialize;
 use zeroize::Zeroizing;
 
@@ -14,18 +15,24 @@ use crate::ids::Ids;
 
 /// The bytes that `holds` reads at a time, so the old file never needs more memory than this.
 const CHUNK: usize = 8192;
+/// The largest key file that sauce-install reads, in bytes.
+/// An ed25519 key or an age identity file is far smaller, and a larger file is refused before it is read in full.
+const LARGEST_KEY: usize = 16 * 1024;
 const RENDERED: &str = "rendered";
 
 /// The JSON file that the NixOS module writes for one run.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Config {
-    identity_file: PathBuf,
+    /// An age X25519 identity file, as `age-keygen` writes it.
+    identity_file: Option<PathBuf>,
     /// Points at the newest generation, a numbered directory in `mount_point`.
     link: PathBuf,
     /// A tmpfs that the NixOS module mounts before the run.
     mount_point: PathBuf,
     secrets: Vec<Secret>,
+    /// OpenSSH ed25519 private keys, which open files for the recipients that `ssh-to-age` makes from their public keys.
+    ssh_key_paths: Vec<PathBuf>,
     templates: Vec<Template>,
 }
 
@@ -60,6 +67,14 @@ pub enum Error {
     Full(PathBuf),
     #[error("{0} holds no age X25519 identity")]
     Identity(PathBuf),
+    #[error("{0} is larger than {LARGEST_KEY} bytes, so it is not a key")]
+    KeyTooLarge(PathBuf),
+    #[error(
+        "this machine has no key, because sauce.identityFile is not set and no path in sauce.age.sshKeyPaths holds an ed25519 key that sauce-install can read"
+    )]
+    NoKey,
+    #[error("cannot use {path}, because {source}")]
+    SshKey { path: PathBuf, source: KeyError },
     #[error("{name} has the mode {mode}, which is not an octal number up to 7777")]
     Mode { mode: String, name: String },
     #[error("{name} is not a valid name: {source}")]
@@ -149,6 +164,43 @@ impl Units {
     }
 }
 
+impl Config {
+    /// The key in `identity_file`, which must be readable, and each key in `ssh_key_paths` that is an ed25519 key, as sops-nix takes them.
+    /// Any other key in `ssh_key_paths` gets a warning and no failure, because sshd makes its host keys after the first run at boot.
+    fn identities(&self) -> Result<Vec<x25519::Identity>, Error> {
+        let mut identities = Vec::with_capacity(self.ssh_key_paths.len() + 1);
+        if let Some(path) = &self.identity_file {
+            let key = read_key(path)?;
+            let identity = std::str::from_utf8(&key)
+                .ok()
+                .and_then(|text| {
+                    text.lines()
+                        .map(str::trim)
+                        .find(|line| !line.is_empty() && !line.starts_with('#'))
+                })
+                .and_then(|line| line.parse().ok())
+                .ok_or_else(|| Error::Identity(path.clone()))?;
+            identities.push(identity);
+        }
+        for path in &self.ssh_key_paths {
+            let identity = read_key(path).and_then(|key| {
+                ssh::identity(&key).map_err(|source| Error::SshKey {
+                    path: path.clone(),
+                    source,
+                })
+            });
+            match identity {
+                Ok(identity) => identities.push(identity),
+                Err(error) => eprintln!("sauce-install: {error}, so sauce-install skips it"),
+            }
+        }
+        if identities.is_empty() {
+            return Err(Error::NoKey);
+        }
+        Ok(identities)
+    }
+}
+
 /// Opens every secret and renders every template before it writes anything, so a failure leaves the current generation as it is.
 pub fn run(config_path: &Path) -> Result<(), Error> {
     let text = fs::read(config_path).map_err(io_error("cannot read", config_path))?;
@@ -156,11 +208,11 @@ pub fn run(config_path: &Path) -> Result<(), Error> {
         path: config_path.to_owned(),
         source,
     })?;
-    let identity = identity(&config.identity_file)?;
+    let identities = config.identities()?;
     let values = config
         .secrets
         .iter()
-        .map(|secret| open(secret, &identity))
+        .map(|secret| open(secret, &identities))
         .collect::<Result<Vec<_>, _>>()?;
     let rendered: Vec<_> = config
         .templates
@@ -290,14 +342,24 @@ fn holds(old: impl Read, value: &[u8]) -> io::Result<bool> {
     }
 }
 
-/// The first line that is not empty and not a comment, as `age-keygen` writes it.
-fn identity(path: &Path) -> Result<x25519::Identity, Error> {
-    let text = Zeroizing::new(fs::read_to_string(path).map_err(io_error("cannot read", path))?);
-    text.lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty() && !line.starts_with('#'))
-        .and_then(|line| line.parse().ok())
-        .ok_or_else(|| Error::Identity(path.to_owned()))
+/// Reads a key into memory that is wiped on drop, with no copy that is not.
+fn read_key(path: &Path) -> Result<Zeroizing<Vec<u8>>, Error> {
+    let mut file = File::open(path).map_err(io_error("cannot read", path))?;
+    let mut key = Zeroizing::new(vec![0; LARGEST_KEY + 1]);
+    let mut filled = 0;
+    while filled < key.len() {
+        match file.read(&mut key[filled..]) {
+            Ok(0) => break,
+            Ok(read) => filled += read,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(io_error("cannot read", path)(error)),
+        }
+    }
+    if filled > LARGEST_KEY {
+        return Err(Error::KeyTooLarge(path.to_owned()));
+    }
+    key.truncate(filled);
+    Ok(key)
 }
 
 fn io_error(action: &'static str, path: impl AsRef<Path>) -> impl FnOnce(io::Error) -> Error {
@@ -333,7 +395,8 @@ fn new_generation(link: &Path, mount_point: &Path) -> Result<PathBuf, Error> {
     Ok(generation)
 }
 
-fn open(secret: &Secret, identity: &x25519::Identity) -> Result<Zeroizing<Vec<u8>>, Error> {
+/// The value of a secret, from the first identity that is a reader of its file.
+fn open(secret: &Secret, identities: &[x25519::Identity]) -> Result<Zeroizing<Vec<u8>>, Error> {
     let name = &secret.delivery.name;
     let expected: Name = name.parse().map_err(|source| Error::Name {
         name: name.clone(),
@@ -344,11 +407,25 @@ fn open(secret: &Secret, identity: &x25519::Identity) -> Result<Zeroizing<Vec<u8
         .as_ref()
         .ok_or_else(|| Error::NoFile(name.clone()))?;
     let text = format::load(file).map_err(io_error("cannot read", file))?;
-    let (value, _facts) =
-        format::read(&text, &expected, Opener::Age(identity)).map_err(|source| Error::Open {
-            name: name.clone(),
-            source,
-        })?;
+    // A wrap that fails for one identity can sit next to the wrap of another, so only a success or a failure of the whole file ends the search.
+    let mut failure = None;
+    let read = identities
+        .iter()
+        .find_map(
+            |identity| match format::read(&text, &expected, Opener::Age(identity)) {
+                Err(ReadError::NotAReader) => None,
+                Err(error @ (ReadError::Unwrap(_) | ReadError::Commitment)) => {
+                    failure.get_or_insert(error);
+                    None
+                }
+                read => Some(read),
+            },
+        )
+        .unwrap_or_else(|| Err(failure.unwrap_or(ReadError::NotAReader)));
+    let (value, _facts) = read.map_err(|source| Error::Open {
+        name: name.clone(),
+        source,
+    })?;
     Ok(Zeroizing::new(value.expose().to_vec()))
 }
 
