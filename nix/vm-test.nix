@@ -100,7 +100,7 @@ pkgs.testers.runNixOSTest {
 
       sauce = {
         inherit (notes) recipient adminRecipients;
-        identityFile = "${../example/snakeoil/notes.key}";
+        identityFile = "/etc/sauce/notes.key";
         defaultDir = files;
         secrets = lib.mapAttrs (
           _: secret: lib.getAttrs delivery secret // { neededForUsers = lib.mkDefault secret.neededForUsers; }
@@ -108,6 +108,10 @@ pkgs.testers.runNixOSTest {
         templates = lib.mapAttrs (
           _: template: lib.getAttrs (delivery ++ [ "content" ]) template
         ) notes.templates;
+      };
+      environment.etc."sauce/notes.key" = {
+        source = ../example/snakeoil/notes.key;
+        mode = "0400";
       };
 
       # The owners and groups of the files, which the services of notes make.
@@ -140,6 +144,13 @@ pkgs.testers.runNixOSTest {
       specialisation.changed.configuration.sauce.secrets."sso/hedgedoc".file = lib.mkForce changed;
       specialisation.wrong-key.configuration.sauce.secrets."sso/hedgedoc".file = lib.mkForce wrongKey;
       specialisation.for-users.configuration.sauce.secrets."ddclient/api-token".neededForUsers = true;
+      specialisation.loose-key.configuration = {
+        environment.etc."sauce/loose.key" = {
+          source = ../example/snakeoil/notes.key;
+          mode = "0644";
+        };
+        sauce.identityFile = lib.mkForce "/etc/sauce/loose.key";
+      };
     };
 
   nodes.host = {
@@ -240,6 +251,11 @@ pkgs.testers.runNixOSTest {
           notes.succeed("journalctl -u sauce-install.service | grep -F 'sauce.secrets.\"sso/hedgedoc\"'")
           assert read("/run/sauce/sso/hedgedoc") == "${changedValue}"
           assert read("/run/sauce/hedgedoc/db-password") == "${values."hedgedoc/db-password"}"
+
+      with subtest("a key that other users can read fails the activation and keeps the secrets"):
+          notes.fail("${system}/specialisation/loose-key/bin/switch-to-configuration test")
+          notes.wait_until_succeeds("journalctl -u sauce-install.service | grep -F '/etc/sauce/loose.key is not a regular file of the user that runs sauce-install'", timeout=60)
+          assert read("/run/sauce/sso/hedgedoc") == "${changedValue}"
 
       with subtest("a machine with no secret for users left keeps no file for users"):
           notes.succeed("${system}/specialisation/for-users/bin/switch-to-configuration test")

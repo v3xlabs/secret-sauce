@@ -1,6 +1,8 @@
 use std::fs::{self, DirBuilder, File, OpenOptions, Permissions};
 use std::io::{self, Read, Write};
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt, fchown, symlink};
+use std::os::unix::fs::{
+    DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt, fchown, symlink,
+};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -12,12 +14,10 @@ use serde::Deserialize;
 use zeroize::Zeroizing;
 
 use crate::ids::Ids;
+use crate::key::{KeyFile, KeyFileError};
 
 /// The bytes that `holds` reads at a time, so the old file never needs more memory than this.
 const CHUNK: usize = 8192;
-/// The largest key file that sauce-install reads, in bytes.
-/// An ed25519 key or an age identity file is far smaller, and a larger file is refused before it is read in full.
-const LARGEST_KEY: usize = 16 * 1024;
 const RENDERED: &str = "rendered";
 
 /// The JSON file that the NixOS module writes for one run.
@@ -67,8 +67,8 @@ pub enum Error {
     Full(PathBuf),
     #[error("{0} holds no age X25519 identity")]
     Identity(PathBuf),
-    #[error("{0} is larger than {LARGEST_KEY} bytes, so it is not a key")]
-    KeyTooLarge(PathBuf),
+    #[error(transparent)]
+    KeyFile(#[from] KeyFileError),
     #[error(
         "this machine has no key, because sauce.identityFile is not set and no path in sauce.age.sshKeyPaths holds an ed25519 key that sauce-install can read"
     )]
@@ -168,9 +168,13 @@ impl Config {
     /// The key in `identity_file`, which must be readable, and each key in `ssh_key_paths` that is an ed25519 key, as sops-nix takes them.
     /// Any other key in `ssh_key_paths` gets a warning and no failure, because sshd makes its host keys after the first run at boot.
     fn identities(&self) -> Result<Vec<x25519::Identity>, Error> {
+        // The owner of `/proc/self` is the effective user of this process, which is root on a machine and the user of the tests.
+        let owner = fs::metadata("/proc/self")
+            .map_err(io_error("cannot read", "/proc/self"))?
+            .uid();
         let mut identities = Vec::with_capacity(self.ssh_key_paths.len() + 1);
         if let Some(path) = &self.identity_file {
-            let key = read_key(path)?;
+            let key = KeyFile::open(path, owner)?.read()?;
             let identity = std::str::from_utf8(&key)
                 .ok()
                 .and_then(|text| {
@@ -183,12 +187,15 @@ impl Config {
             identities.push(identity);
         }
         for path in &self.ssh_key_paths {
-            let identity = read_key(path).and_then(|key| {
-                ssh::identity(&key).map_err(|source| Error::SshKey {
-                    path: path.clone(),
-                    source,
-                })
-            });
+            let identity = KeyFile::open(path, owner)
+                .and_then(KeyFile::read)
+                .map_err(Error::from)
+                .and_then(|key| {
+                    ssh::identity(&key).map_err(|source| Error::SshKey {
+                        path: path.clone(),
+                        source,
+                    })
+                });
             match identity {
                 Ok(identity) => identities.push(identity),
                 Err(error) => eprintln!("sauce-install: {error}, so sauce-install skips it"),
@@ -340,26 +347,6 @@ fn holds(old: impl Read, value: &[u8]) -> io::Result<bool> {
             _ => return Ok(false),
         }
     }
-}
-
-/// Reads a key into memory that is wiped on drop, with no copy that is not.
-fn read_key(path: &Path) -> Result<Zeroizing<Vec<u8>>, Error> {
-    let mut file = File::open(path).map_err(io_error("cannot read", path))?;
-    let mut key = Zeroizing::new(vec![0; LARGEST_KEY + 1]);
-    let mut filled = 0;
-    while filled < key.len() {
-        match file.read(&mut key[filled..]) {
-            Ok(0) => break,
-            Ok(read) => filled += read,
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-            Err(error) => return Err(io_error("cannot read", path)(error)),
-        }
-    }
-    if filled > LARGEST_KEY {
-        return Err(Error::KeyTooLarge(path.to_owned()));
-    }
-    key.truncate(filled);
-    Ok(key)
 }
 
 fn io_error(action: &'static str, path: impl AsRef<Path>) -> impl FnOnce(io::Error) -> Error {

@@ -593,6 +593,11 @@ When a host has no secret left, the next activation removes `/run/sauce` and the
 The host's keys are the age key in `sauce.identityFile` and the ssh keys in `sauce.age.sshKeyPaths`, which holds the ed25519 host keys of openssh by default, and any one of them opens a file.
 `sauce-install` turns each ssh key into its age key in memory, as sops-nix does with the code of `ssh-to-age`.
 It skips an ssh key that it cannot read or that is not an ed25519 key, with a warning, because sshd makes its keys only after `sauce-install` runs at the first boot.
+A key path is a string outside the Nix store with no store context, so the evaluation refuses a Nix path, a store path and a string that refers to the store.
+It cannot undo a copy that an interpolation such as `"${./key}"` made before the check, so a key never goes into the flake.
+At activation, `sauce-install` uses a key only when it is a regular file of root with no permission for its group and other users, as sshd demands of its host keys.
+It follows the path folder by folder, also through links, and refuses it when a folder on the way belongs to a user other than root or is writable for its group or other users, because such a user could point the path at another key of root.
+The secrets with `neededForUsers` are installed before NixOS writes `/etc`, so their key must be on the machine before the activation, and not come from `environment.etc`.
 
 If a secret cannot be decrypted, the activation fails.
 A deploy tool that rolls back on failure then rolls back.

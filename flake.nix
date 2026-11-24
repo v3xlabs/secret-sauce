@@ -326,6 +326,28 @@
                 && sshKeyPaths [ { sauce.age.sshKeyPaths = lib.mkForce [ withContext ]; } ] == null;
               message = "sauce.age.sshKeyPaths holds the ed25519 host key of a machine with openssh, skips a host key with no type and one under a directory of sauce, and is empty on a machine without openssh. A store path, a Nix path or a string with store context there fails the evaluation, and a machine with secrets and neither sauce.identityFile nor a path in sauce.age.sshKeyPaths has a failed assertion.";
             }
+            {
+              ok =
+                let
+                  evaluates =
+                    identityFile:
+                    (builtins.tryEval (
+                      builtins.deepSeq
+                        (exampleFlake.nixosConfigurations.notes.extendModules {
+                          modules = [ { sauce.identityFile = lib.mkForce identityFile; } ];
+                        }).config.sauce.identityFile
+                        true
+                    )).success;
+                  withContext = "${builtins.substring 0 0 "${pkgs.emptyFile}"}/var/lib/sauce/host.key";
+                in
+                evaluates "/var/lib/sauce/host.key"
+                && !evaluates ./example/snakeoil/notes.key
+                && !evaluates "${./example/snakeoil/notes.key}"
+                && !evaluates (builtins.unsafeDiscardStringContext "${pkgs.emptyFile}")
+                && !evaluates "${builtins.storeDir}/key"
+                && !evaluates withContext;
+              message = "sauce.identityFile takes a path on the machine, and a Nix path, a store path with or without context, or a string with store context fails the evaluation.";
+            }
           ];
           failed = lib.filter (fact: !fact.ok) facts;
         in

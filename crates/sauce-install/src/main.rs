@@ -1,5 +1,6 @@
 mod ids;
 mod install;
+mod key;
 
 use std::io;
 use std::path::PathBuf;

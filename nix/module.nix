@@ -352,7 +352,7 @@ in
       };
     };
 
-    identityFile = optional types.str "The path of the age identity of this machine, on the machine, as `age-keygen` writes it. `sauce-install` opens a file with this key or with a key of `age.sshKeyPaths`.";
+    identityFile = optional keyPath "The path of the age identity of this machine, on the machine, as `age-keygen` writes it. `sauce-install` opens a file with this key or with a key of `age.sshKeyPaths`. It is a string outside the Nix store with no store context, and the evaluation refuses a Nix path, a store path or a string that refers to the store. At activation, `sauce-install` refuses a key that is not a regular file of root with no permission for its group and other users.";
 
     age.sshKeyPaths = mkOption {
       type = types.listOf keyPath;
